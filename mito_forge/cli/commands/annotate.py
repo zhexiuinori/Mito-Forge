@@ -14,20 +14,61 @@ from ...utils.exceptions import MitoForgeError
 
 console = Console()
 
-@click.command()
+import os
+def _t(key):
+    lang = os.getenv("MITO_LANG", "zh")
+    texts = {
+        "zh": {
+            "ann_title": "基因注释分析",
+            "input_file": "输入文件",
+            "output_dir": "输出目录",
+            "annotation_tool": "注释工具",
+            "threads": "线程数",
+            "genetic_code": "遗传密码表",
+            "ann_running": "执行基因注释...",
+            "ann_done": "基因注释完成！",
+            "ann_stats": "注释统计",
+            "ann_file": "注释文件",
+            "gb_file": "GenBank文件"
+        },
+        "en": {
+            "ann_title": "Gene Annotation Analysis",
+            "input_file": "Input file",
+            "output_dir": "Output directory",
+            "annotation_tool": "Annotation tool",
+            "threads": "Threads",
+            "genetic_code": "Genetic code",
+            "ann_running": "Running gene annotation...",
+            "ann_done": "Gene annotation completed!",
+            "ann_stats": "Annotation stats",
+            "ann_file": "Annotation file",
+            "gb_file": "GenBank file"
+        }
+    }
+    return texts.get(lang, texts["zh"]).get(key, key)
+
+from ...utils.i18n import t as _t
+
+def _help(key):
+    import sys, os as _os
+    lang = "en" if ("--lang" in sys.argv and "en" in sys.argv) else _os.getenv("MITO_LANG", "zh")
+    from ...utils.i18n import t as _tt
+    return _tt(key, lang)
+
+@click.command(help=_help("ann.help.desc"))
 @click.argument('input_file', type=click.Path(exists=True))
 @click.option('-o', '--output-dir', default='./annotation_results',
-              help='输出目录 (默认: ./annotation_results)')
+              help=_help('ann.opt.output_dir'))
 @click.option('-t', '--annotation-tool',
               type=click.Choice(['mitos', 'geseq', 'prokka']),
               default='mitos',
-              help='注释工具选择 (默认: mitos)')
+              help=_help('ann.opt.annotation_tool'))
 @click.option('-j', '--threads', default=4, type=int,
-              help='线程数 (默认: 4)')
+              help=_help('ann.opt.threads'))
 @click.option('--genetic-code', default=2, type=int,
-              help='遗传密码表 (默认: 2 - 脊椎动物线粒体)')
+              help=_help('ann.opt.genetic_code'))
 @click.option('--reference-db', default='mitochondria',
-              help='参考数据库 (默认: mitochondria)')
+              help=_help('ann.opt.reference_db'))
 @click.pass_context
 def annotate(ctx, input_file, output_dir, annotation_tool, threads, genetic_code, reference_db):
     """
@@ -43,13 +84,54 @@ def annotate(ctx, input_file, output_dir, annotation_tool, threads, genetic_code
     quiet = ctx.obj.get('quiet', False)
     
     try:
+        # Simulation hook
+        sim = os.getenv("MITO_SIM", "")
+        sim_map = dict(kv.split("=", 1) for kv in sim.split(",") if "=" in kv) if sim else {}
+        scenario = sim_map.get("annotate")
+        if scenario:
+            # prepare output dir
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            lang = os.getenv("MITO_LANG", "zh")
+            def msg(zh, en): return zh if lang == "zh" else en
+
+            if scenario == "ok":
+                if not quiet:
+                    console.print(f"\n📝 [bold blue]{_t('ann_title')}[/bold blue]")
+                    console.print(f"📁 {_t('input_file')}: {input_file}")
+                    console.print(f"📂 {_t('output_dir')}: {output_dir}")
+                    console.print(f"🔧 {_t('annotation_tool')}: {annotation_tool}")
+                    console.print(f"⚡ {_t('threads')}: {threads}")
+                    console.print(f"🧬 {_t('genetic_code')}: {genetic_code}\n")
+                    console.print(f"✅ [bold green]{_t('ann_done')}[/bold green]\n")
+                    console.print(f"📊 {_t('ann_stats')}:")
+                    console.print(f"  • 蛋白编码基因: 13")
+                    console.print(f"  • tRNA基因: 22")
+                    console.print(f"  • rRNA基因: 2")
+                    console.print(f"  • 总基因数: 37")
+                    console.print(f"\n📄 {_t('ann_file')}: [link]{output_path}/annotation.gff[/link]")
+                    console.print(f"📄 {_t('gb_file')}: [link]{output_path}/annotation.gb[/link]")
+                return 0
+            elif scenario == "db_missing":
+                console.print(f"\n❌ [bold red]{msg('参考数据库缺失或未配置','Reference database missing or not configured')}[/bold red]")
+                console.print(msg("请准备/配置 reference-db 后重试",
+                                  "Prepare/configure the reference DB and retry"))
+                raise SystemExit(1)
+            elif scenario == "invalid_genetic_code":
+                console.print(f"\n❌ [bold red]{msg('遗传密码表不合法或不匹配','Invalid or mismatched genetic code')}[/bold red]")
+                raise SystemExit(1)
+            elif scenario == "timeout":
+                console.print(f"\n⏱️ [bold red]{msg('执行超时','Execution timeout')}[/bold red]")
+                console.print(msg("可减少线程/缩小数据量后重试",
+                                  "Try fewer threads or smaller input chunks"))
+                raise SystemExit(1)
         if not quiet:
-            console.print("\n📝 [bold blue]基因注释分析[/bold blue]")
-            console.print(f"📁 输入文件: {input_file}")
-            console.print(f"📂 输出目录: {output_dir}")
-            console.print(f"🔧 注释工具: {annotation_tool}")
-            console.print(f"⚡ 线程数: {threads}")
-            console.print(f"🧬 遗传密码表: {genetic_code}\n")
+            console.print(f"\n📝 [bold blue]{_t('ann_title')}[/bold blue]")
+            console.print(f"📁 {_t('input_file')}: {input_file}")
+            console.print(f"📂 {_t('output_dir')}: {output_dir}")
+            console.print(f"🔧 {_t('annotation_tool')}: {annotation_tool}")
+            console.print(f"⚡ {_t('threads')}: {threads}")
+            console.print(f"🧬 {_t('genetic_code')}: {genetic_code}\n")
         
         # 创建输出目录
         output_path = Path(output_dir)
@@ -69,7 +151,7 @@ def annotate(ctx, input_file, output_dir, annotation_tool, threads, genetic_code
         annotation_agent = AnnotationAgent(config)
         
         # 执行注释
-        with console.status("[bold green]执行基因注释...") if not quiet else console:
+        with console.status(f"[bold green]{_t('ann_running')}") if not quiet else console:
             results = annotation_agent.annotate(
                 input_file=input_file,
                 output_dir=str(output_path)
@@ -77,14 +159,14 @@ def annotate(ctx, input_file, output_dir, annotation_tool, threads, genetic_code
         
         # 显示结果
         if not quiet:
-            console.print("✅ [bold green]基因注释完成！[/bold green]\n")
-            console.print(f"📊 注释统计:")
+            console.print(f"✅ [bold green]{_t('ann_done')}[/bold green]\n")
+            console.print(f"📊 {_t('ann_stats')}:")
             console.print(f"  • 蛋白编码基因: {results.get('protein_genes', 'N/A')}")
             console.print(f"  • tRNA基因: {results.get('trna_genes', 'N/A')}")
             console.print(f"  • rRNA基因: {results.get('rrna_genes', 'N/A')}")
             console.print(f"  • 总基因数: {results.get('total_genes', 'N/A')}")
-            console.print(f"\n📄 注释文件: [link]{output_path}/annotation.gff[/link]")
-            console.print(f"📄 GenBank文件: [link]{output_path}/annotation.gb[/link]")
+            console.print(f"\n📄 {_t('ann_file')}: [link]{output_path}/annotation.gff[/link]")
+            console.print(f"📄 {_t('gb_file')}: [link]{output_path}/annotation.gb[/link]")
         
         return 0
         

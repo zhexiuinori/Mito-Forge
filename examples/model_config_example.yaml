@@ -1,0 +1,110 @@
+# Mito-Forge 模型配置示例
+# 将此文件复制到 ~/.mito-forge/ 目录下并重命名为 model_profiles.yaml
+
+# OpenAI 官方 API 配置
+openai-gpt4:
+  provider_type: openai
+  model: gpt-4o
+  api_key: ${OPENAI_API_KEY}  # 从环境变量读取
+  api_base: https://api.openai.com/v1
+  description: OpenAI GPT-4 模型
+
+openai-gpt4-mini:
+  provider_type: openai
+  model: gpt-4o-mini
+  api_key: ${OPENAI_API_KEY}
+  api_base: https://api.openai.com/v1
+  description: OpenAI GPT-4 Mini 模型（更经济）
+
+# 本地 Ollama 配置
+ollama-qwen:
+  provider_type: ollama
+  model: qwen2.5:7b
+  api_base: http://localhost:11434
+  description: 本地 Qwen2.5 7B 模型
+
+ollama-llama:
+  provider_type: ollama
+  model: llama3.1:8b
+  api_base: http://localhost:11434
+  description: 本地 Llama3.1 8B 模型
+
+# 智谱 AI 配置
+zhipu-glm4:
+  provider_type: zhipu
+  model: glm-4
+  api_key: ${ZHIPU_API_KEY}
+  description: 智谱 AI GLM-4 模型
+
+zhipu-glm4-plus:
+  provider_type: zhipu
+  model: glm-4-plus
+  api_key: ${ZHIPU_API_KEY}
+  description: 智谱 AI GLM-4 Plus 模型
+
+# 月之暗面 Kimi 配置
+moonshot-8k:
+  provider_type: moonshot
+  model: moonshot-v1-8k
+  api_key: ${MOONSHOT_API_KEY}
+  description: 月之暗面 Kimi 8K 模型
+
+moonshot-32k:
+  provider_type: moonshot
+  model: moonshot-v1-32k
+  api_key: ${MOONSHOT_API_KEY}
+  description: 月之暗面 Kimi 32K 模型
+
+# DeepSeek 配置
+deepseek-chat:
+  provider_type: deepseek
+  model: deepseek-chat
+  api_key: ${DEEPSEEK_API_KEY}
+  description: DeepSeek Chat 模型
+
+deepseek-coder:
+  provider_type: deepseek
+  model: deepseek-coder
+  api_key: ${DEEPSEEK_API_KEY}
+  description: DeepSeek Coder 模型
+
+# Azure OpenAI 配置示例
+azure-gpt4:
+  provider_type: azure
+  model: gpt-4  # 这里是部署名称
+  api_key: ${AZURE_OPENAI_API_KEY}
+  api_base: https://your-resource.openai.azure.com
+  description: Azure OpenAI GPT-4
+
+# 自定义 OpenAI 兼容 API
+custom-api:
+  provider_type: openai_compatible
+  model: gpt-3.5-turbo
+  api_key: ${CUSTOM_API_KEY}
+  api_base: http://localhost:8000/v1
+  description: 自定义 OpenAI 兼容 API
+
+# 远程 Ollama 服务
+remote-ollama:
+  provider_type: ollama
+  model: qwen2.5:14b
+  api_base: http://192.168.1.100:11434
+  description: 远程 Ollama 服务器
+
+# 其他兼容服务示例
+# 
+# 通义千问 (如果有兼容 API)
+# tongyi-qwen:
+#   provider_type: openai_compatible
+#   model: qwen-turbo
+#   api_key: ${TONGYI_API_KEY}
+#   api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
+#   description: 通义千问模型
+#
+# 文心一言 (如果有兼容 API)  
+# wenxin-yiyan:
+#   provider_type: openai_compatible
+#   model: ernie-bot-turbo
+#   api_key: ${WENXIN_API_KEY}
+#   api_base: https://aip.baidubce.com/rpc/2.0/ai_custom/v1
+#   description: 文心一言模型

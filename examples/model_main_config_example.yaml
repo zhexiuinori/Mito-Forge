@@ -1,0 +1,25 @@
+# Mito-Forge 主配置文件示例
+# 将此文件复制到 ~/.mito-forge/ 目录下并重命名为 model_config.yaml
+
+# 默认使用的模型配置
+default_profile: ollama-qwen
+
+# 回退配置列表（按优先级排序）
+fallback_profiles:
+  - zhipu-glm4      # 首选回退：智谱 AI
+  - moonshot-8k     # 次选回退：月之暗面
+  - openai-gpt4-mini # 最后回退：OpenAI
+
+# 是否启用自动回退
+auto_fallback: true
+
+# 其他配置选项
+timeout: 60           # 请求超时时间（秒）
+max_retries: 3        # 最大重试次数
+temperature: 0.2      # 默认温度参数
+max_tokens: 4000      # 默认最大 token 数
+
+# 日志配置
+logging:
+  level: INFO         # 日志级别：DEBUG, INFO, WARNING, ERROR
+  log_api_calls: true # 是否记录 API 调用日志

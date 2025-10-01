@@ -15,6 +15,48 @@ from ...utils.exceptions import MitoForgeError
 
 console = Console()
 
+# 读取环境语言并提供简单翻译
+import os
+def _t(key):
+    lang = os.getenv("MITO_LANG", "zh")
+    texts = {
+        "zh": {
+            "title": "🤖 智能体系统状态",
+            "list": "智能体状态列表:",
+            "status": "状态",
+            "type": "类型",
+            "tasks": "任务数",
+            "mem_last": "内存使用",
+            "last_activity": "最后活动",
+            "summary": "📊 系统摘要:",
+            "active_agents": "活跃智能体",
+            "total_tasks": "总任务数",
+            "cap_desc": "📋 [bold]智能体功能说明[/bold]",
+            "restart_ok": "智能体 {name} 重启成功",
+            "restart_fail": "智能体 {name} 重启失败",
+            "error": "错误",
+            "unexpected": "未预期的错误"
+        },
+        "en": {
+            "title": "🤖 Agents System Status",
+            "list": "Agents status list:",
+            "status": "Status",
+            "type": "Type",
+            "tasks": "Tasks",
+            "mem_last": "Memory",
+            "last_activity": "Last activity",
+            "summary": "📊 Summary:",
+            "active_agents": "Active agents",
+            "total_tasks": "Total tasks",
+            "cap_desc": "📋 [bold]Agents capabilities[/bold]",
+            "restart_ok": "Agent {name} restarted",
+            "restart_fail": "Agent {name} restart failed",
+            "error": "Error",
+            "unexpected": "Unexpected error"
+        }
+    }
+    return texts.get(lang, texts["zh"]).get(key, key)
+
 @click.command()
 @click.option('--status', is_flag=True, help='显示智能体状态')
 @click.option('--detailed', is_flag=True, help='显示详细信息')
@@ -44,9 +86,9 @@ def agents(ctx, status, detailed, restart):
             result = orchestrator.restart_agent(restart)
             if result:
                 if not quiet:
-                    console.print(f"✅ [bold green]智能体 {restart} 重启成功[/bold green]")
+                    console.print(f"✅ [bold green]{_t('restart_ok').format(name=restart)}[/bold green]")
             else:
-                console.print(f"❌ [bold red]智能体 {restart} 重启失败[/bold red]")
+                console.print(f"❌ [bold red]{_t('restart_fail').format(name=restart)}[/bold red]")
                 return 1
         
         # 显示智能体状态
@@ -56,12 +98,12 @@ def agents(ctx, status, detailed, restart):
         return 0
         
     except MitoForgeError as e:
-        console.print(f"\n❌ [bold red]错误:[/bold red] {e}")
+        console.print(f"\n❌ [bold red]{_t('error')}:[/bold red] {e}")
         if verbose:
             console.print_exception()
         return 1
     except Exception as e:
-        console.print(f"\n💥 [bold red]未预期的错误:[/bold red] {e}")
+        console.print(f"\n💥 [bold red]{_t('unexpected')}:[/bold red] {e}")
         if verbose:
             console.print_exception()
         return 1
@@ -71,68 +113,46 @@ def _display_agents_status(orchestrator, detailed, quiet):
     if quiet:
         return
     
-    console.print("\n🤖 [bold blue]智能体系统状态[/bold blue]\n")
+    console.print(f"\n[bold blue]{_t('title')}[/bold blue]\n")
     
     # 获取智能体信息
     agents_info = orchestrator.get_agents_status()
     
-    # 创建状态表格
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("智能体", style="cyan")
-    table.add_column("状态", justify="center")
-    table.add_column("类型", style="green")
-    table.add_column("任务数", justify="right")
-    
-    if detailed:
-        table.add_column("内存使用", justify="right")
-        table.add_column("最后活动", style="dim")
+    # 使用简单文本格式显示智能体状态
+    console.print(_t("list"))
+    console.print("=" * 70)
     
     for agent_name, info in agents_info.items():
         status_icon = "🟢" if info['status'] == 'active' else "🔴" if info['status'] == 'error' else "🟡"
         status_text = f"{status_icon} {info['status']}"
         
-        row = [
-            agent_name,
-            status_text,
-            info['type'],
-            str(info['task_count'])
-        ]
+        console.print(f"• {agent_name:<15} | {_t('status')}: {status_text:<12} | {_t('type')}: {info['type']:<18} | {_t('tasks')}: {info['task_count']}")
         
         if detailed:
-            row.extend([
-                f"{info.get('memory_usage', 0):.1f}MB",
-                info.get('last_activity', 'N/A')
-            ])
-        
-        table.add_row(*row)
+            console.print(f"  └─ {_t('mem_last')}: {info.get('memory_usage', 0):.1f}MB | {_t('last_activity')}: {info.get('last_activity', 'N/A')}")
     
-    console.print(table)
+    console.print("=" * 70)
     
     # 显示系统摘要
     active_count = sum(1 for info in agents_info.values() if info['status'] == 'active')
     total_count = len(agents_info)
     
-    summary = f"活跃智能体: {active_count}/{total_count}"
+    console.print(f"\n{_t('summary')}")
+    console.print(f"   {_t('active_agents')}: {active_count}/{total_count}")
+    
     if detailed:
         total_tasks = sum(info['task_count'] for info in agents_info.values())
-        summary += f"\n总任务数: {total_tasks}"
-    
-    panel = Panel(
-        summary,
-        title="系统摘要",
-        border_style="green" if active_count == total_count else "yellow"
-    )
-    console.print(panel)
+        console.print(f"   {_t('total_tasks')}: {total_tasks}")
     
     # 显示智能体描述
     if detailed:
-        console.print("\n📋 [bold]智能体功能说明[/bold]")
+        console.print(f"\n{_t('cap_desc')}")
         descriptions = {
-            "orchestrator": "🎯 总指挥 - 协调和管理所有智能体",
-            "qc_agent": "🔍 质控专家 - 数据质量评估和预处理",
-            "assembly_agent": "🧬 组装专家 - 基因组序列组装",
-            "annotation_agent": "📝 注释专家 - 基因功能注释",
-            "analysis_agent": "📊 分析专家 - 系统发育和比较分析"
+            "supervisor": "🎯 总指挥 - 协调和管理所有智能体",
+            "qc": "🔍 质控专家 - 数据质量评估和预处理",
+            "assembly": "🧬 组装专家 - 基因组序列组装",
+            "annotation": "📝 注释专家 - 基因功能注释",
+            "analysis": "📊 分析专家 - 系统发育和比较分析"
         }
         
         for agent_name, description in descriptions.items():

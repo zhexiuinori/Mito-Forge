@@ -25,14 +25,25 @@ classifiers = [
 ]
 
 dependencies = [
+    # 核心依赖
+    "PyYAML>=6.0",
+    "requests>=2.31.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    
+    # AI 和数据处理
     "langchain>=0.1.0",
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
     "pydantic>=2.5.0",
-    "chromadb>=0.4.18",
     "pandas>=2.1.0",
     "numpy>=1.24.0",
     "biopython>=1.81",
+    
+    # Web 和存储
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "chromadb>=0.4.18",
+    
+    # 工具库
     "python-dotenv>=1.0.0",
     "loguru>=0.7.0",
 ]
@@ -61,10 +72,11 @@ Repository = "https://github.com/your-org/mito-forge.git"
 "Bug Tracker" = "https://github.com/your-org/mito-forge/issues"
 
 [project.scripts]
-mito-forge = "src.main:main"
+mito-forge = "mito_forge.cli.main:cli"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["mito_forge*"]
 
 [tool.black]
 line-length = 88

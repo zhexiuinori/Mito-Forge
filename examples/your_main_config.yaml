@@ -1,0 +1,19 @@
+# 主配置文件
+# 复制到 ~/.mito-forge/model_config.yaml 使用
+
+# 默认使用硅基流动的 Qwen 模型（成本较低）
+default_profile: siliconflow-qwen
+
+# 回退配置列表（按优先级排序）
+fallback_profiles:
+  - openai-chatanywhere  # 回退到 OpenAI
+  - ollama-local         # 最后回退到本地 Ollama
+
+# 启用自动回退
+auto_fallback: true
+
+# 全局配置
+timeout: 60
+max_retries: 3
+temperature: 0.2
+max_tokens: 4000

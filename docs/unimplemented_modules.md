@@ -97,11 +97,15 @@
   - 职责：组合工具封装，返回标准化 StageResult
 
 - [x] 主管（Orchestrator/Supervisor）
-  - mito_forge/core/agents/orchestrator.py
-  - 职责：阶段规划、策略选择、资源分配、重试/降级、报告汇总
-  - 函数：
-    - plan_route(state) -> next_stage
-    - apply_strategy(metrics, errors, config) -> adjustments
+  - mito_forge/graph/nodes.py (supervisor_node 函数)
+  - 职责：智能数据分析、策略选择、资源评估、执行计划制定、监控配置
+  - 已完成功能：
+    - 深度数据分析（读长类型、质量、覆盖度、复杂度评分）
+    - 智能策略选择（基于数据特征的动态策略矩阵）
+    - 资源需求评估（内存、CPU、时间、磁盘空间估算）
+    - 执行计划制定（阶段依赖、条件阶段、关键路径）
+    - 监控和容错策略（质量阈值、重试策略、备用工具）
+    - 分析结果持久化（JSON 格式保存到工作目录）
 
 ## 4) 配置与验证（中优先级）
 - [ ] mito_forge/utils/config.py（已有，需增强）
@@ -164,8 +168,9 @@
   - 支持 list、unset、import/export（JSON/YAML）
 - [ ] doctor 命令增强
   - 工具探测（路径、版本）、CPU/内存检查、常见错误诊断
-- [ ] pipeline 命令增强
-  - 支持 --resume、--skip-qc/--skip-assembly/--skip-annotation、并行多样本
+- [x] pipeline 命令增强
+  - 已完成：LangGraph 流水线命令、检查点恢复 (--resume)、详细输出 (-v)、配置文件支持、Rich 界面
+  - 已完成：status 命令查看流水线状态
 
 ## 8) 测试（高优先级）
 - [ ] tests/tools/test_shell_runner.py（mock subprocess）
@@ -173,19 +178,27 @@
 - [ ] tests/pipeline/test_stages.py（阶段契约）
 - [ ] tests/utils/test_config_validation.py
 - [ ] tests/cli/test_commands.py（Click命令）
+- [x] tests/test_langgraph_pipeline.py
+  - 已完成：LangGraph 流水线完整测试、状态管理测试、检查点测试、策略选择测试
 
 ## 9) LangGraph主管编排（关键）
-- [ ] mito_forge/graph/state.py
+- [x] mito_forge/graph/state.py
   - 职责：PipelineState/StageMetrics/StageOutputs 类型定义（TypedDict）
+  - 已完成：状态结构定义、状态操作函数、检查点机制
 
-- [ ] mito_forge/graph/nodes.py
+- [x] mito_forge/graph/nodes.py
   - 职责：节点函数（supervisor/qc/assembly/annotation/report）
-  - 约定：节点仅操作 state 与调用对应智能体
+  - 已完成：
+    - **Supervisor Agent**: 完整的智能分析和策略选择系统
+    - QC/Assembly/Annotation/Report 节点基础实现
+    - 智能策略选择矩阵（支持 Nanopore/Illumina/PacBio + Animal/Plant）
+    - 数据特征分析（文件信息、读长分布、质量评估、复杂度计算）
+    - 资源需求评估和执行计划制定
+    - 监控配置和容错策略设置
 
-- [ ] mito_forge/graph/build.py
+- [x] mito_forge/graph/build.py
   - 职责：构建 StateGraph、添加条件边与终止
-  - 函数：
-    - build_graph() -> StateGraph
+  - 已完成：图构建逻辑、条件路由、检查点保存/恢复、同步执行器
 
 - [ ] mito_forge/graph/policies.py
   - 职责：重试/超时策略、路由判定逻辑
@@ -196,3 +209,28 @@
 备注：
 - 此文档仅作为实现规划，帮助后续逐步落地；不需要在当前阶段编写代码。
 - 优先顺序建议：工具执行层 → QC阶段 → 组装阶段 → 注释阶段 → Checkpoint/Retry → 报告 → LangGraph编排与持久化。
+
+## 已完成模块总结（当前进度）
+✅ **LangGraph 核心架构** - 状态驱动的多智能体流水线框架
+✅ **PipelineState 状态管理** - 完整的状态类型定义和操作函数
+✅ **Supervisor Agent** - 智能数据分析和策略选择系统
+✅ **CLI 流水线命令** - 完整的用户界面和检查点恢复
+✅ **测试验证** - LangGraph 流水线的端到端测试
+✅ **日志系统** - 统一的日志配置和输出
+
+## 下一个建议实现的模块
+🎯 **1) 工具执行层** - `mito_forge/tools/shell_runner.py` 和 `tool_discovery.py`
+   - 这是所有实际工具调用的基础
+   - 完成后可以让 LangGraph 节点调用真实的生物信息学工具
+
+## 10) 运行时与可观测性（关键）
+- [ ] mito_forge/utils/runtime.py（运行时可视化与事件总线）
+  - 职责：实时日志流（stdout/stderr）到控制台与日志文件；事件回调（Started/Stdout/Stderr/Finished）；命令与时间信息落盘（cmd.json、timing.json）
+  - 函数（规划）：run_cmd_streaming(cmd, cwd, env, timeout, logs_dir, tag, event_cb) -> ShellResult；emit(event_cb, type, payload)
+
+- [ ] 失败处理与重试/回退策略
+  - 职责：统一失败分类（TOOL_NOT_FOUND/TIMEOUT/RUNTIME_ERROR/RESOURCE_LIMIT）、失败报告（failure.json）、指数退避重试与备用工具回退
+  - 函数（规划）：classify_failure(returncode, stderr_excerpt) -> str；write_failure_report(logs_dir, tag, result, stderr_excerpt, extra) -> Path；should_retry(error_code, retries_left) -> bool；backoff_delay(attempt) -> float
+
+- [x] mito_forge/utils/logging.py
+  - 已完成：统一日志配置、控制台和文件输出、日志级别控制

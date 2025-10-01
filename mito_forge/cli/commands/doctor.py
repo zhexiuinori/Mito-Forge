@@ -18,6 +18,37 @@ from ...utils.exceptions import MitoForgeError
 
 console = Console()
 
+from ...utils.i18n import t as _t
+
+import os
+def _t(key):
+    lang = os.getenv("MITO_LANG", "zh")
+    texts = {
+        "zh": {
+            "title": "🏥 Mito-Forge 系统诊断",
+            "sys_check": "🖥️  [bold]系统环境检查[/bold]",
+            "deps_check": "\n🐍 [bold]Python依赖检查[/bold]",
+            "tools_check": "\n🧬 [bold]生物信息学工具检查[/bold]",
+            "issues_found": "\n发现的问题:",
+            "summary_label": "📊 诊断摘要",
+            "all_passed": "\n🎉 [bold green]所有检查都通过了！[/bold green]",
+            "ready": "Mito-Forge已准备就绪。",
+            "error_in_diag": "诊断过程中出现错误"
+        },
+        "en": {
+            "title": "🏥 Mito-Forge System Doctor",
+            "sys_check": "🖥️  [bold]System environment check[/bold]",
+            "deps_check": "\n🐍 [bold]Python dependencies check[/bold]",
+            "tools_check": "\n🧬 [bold]Bioinformatics tools check[/bold]",
+            "issues_found": "\nIssues found:",
+            "summary_label": "📊 Summary",
+            "all_passed": "\n🎉 [bold green]All checks passed![/bold green]",
+            "ready": "Mito-Forge is ready.",
+            "error_in_diag": "Error during diagnostics"
+        }
+    }
+    return texts.get(lang, texts["zh"]).get(key, key)
+
 @click.command()
 @click.option('--check-tools', is_flag=True, help='检查生物信息学工具')
 @click.option('--check-system', is_flag=True, help='检查系统环境')
@@ -35,11 +66,11 @@ def doctor(ctx, check_tools, check_system, check_dependencies, fix_issues):
         mito-forge doctor --check-tools
         mito-forge doctor --fix-issues
     """
-    verbose = ctx.obj.get('verbose', False)
-    quiet = ctx.obj.get('quiet', False)
+    verbose = ctx.obj.get('verbose', False) if ctx.obj else False
+    quiet = ctx.obj.get('quiet', False) if ctx.obj else False
     
     if not quiet:
-        console.print("\n🏥 [bold blue]Mito-Forge 系统诊断[/bold blue]\n")
+        console.print(f"\n[bold blue]{_t('title')}[/bold blue]\n")
     
     issues = []
     
@@ -71,7 +102,7 @@ def doctor(ctx, check_tools, check_system, check_dependencies, fix_issues):
         return 0 if not issues else 1
         
     except Exception as e:
-        console.print(f"\n💥 [bold red]诊断过程中出现错误:[/bold red] {e}")
+        console.print(f"\n💥 [bold red]{_t('error_in_diag')}:[/bold red] {e}")
         if verbose:
             console.print_exception()
         return 1
@@ -81,7 +112,7 @@ def _check_system_environment(verbose, quiet):
     issues = []
     
     if not quiet:
-        console.print("🖥️  [bold]系统环境检查[/bold]")
+        console.print(_t("sys_check"))
     
     # Python版本检查
     python_version = sys.version_info
@@ -93,7 +124,7 @@ def _check_system_environment(verbose, quiet):
             'suggestion': '需要Python 3.8或更高版本'
         })
     elif not quiet:
-        console.print(f"  ✅ Python版本: {python_version.major}.{python_version.minor}.{python_version.micro}")
+        console.print(f"  ✅ {'Python版本' if os.getenv('MITO_LANG','zh')!='en' else 'Python version'}: {python_version.major}.{python_version.minor}.{python_version.micro}")
     
     # 内存检查
     try:
@@ -107,7 +138,7 @@ def _check_system_environment(verbose, quiet):
                 'suggestion': '推荐至少4GB内存用于大数据集处理'
             })
         elif not quiet:
-            console.print(f"  ✅ 系统内存: {memory.total / 1024**3:.1f}GB")
+            console.print(f"  ✅ {'系统内存' if os.getenv('MITO_LANG','zh')!='en' else 'System memory'}: {memory.total / 1024**3:.1f}GB")
     except ImportError:
         if not quiet:
             console.print("  ⚠️  无法检查内存信息 (缺少psutil)")
@@ -124,7 +155,7 @@ def _check_system_environment(verbose, quiet):
                 'suggestion': '推荐至少10GB可用空间'
             })
         elif not quiet:
-            console.print(f"  ✅ 可用磁盘空间: {free_gb:.1f}GB")
+            console.print(f"  ✅ {'可用磁盘空间' if os.getenv('MITO_LANG','zh')!='en' else 'Free disk space'}: {free_gb:.1f}GB")
     except Exception:
         if not quiet:
             console.print("  ⚠️  无法检查磁盘空间")
@@ -136,7 +167,7 @@ def _check_python_dependencies(verbose, quiet):
     issues = []
     
     if not quiet:
-        console.print("\n🐍 [bold]Python依赖检查[/bold]")
+        console.print(_t("deps_check"))
     
     required_packages = [
         'click', 'rich', 'biopython', 'numpy', 'pandas'
@@ -164,7 +195,7 @@ def _check_bioinformatics_tools(verbose, quiet):
     issues = []
     
     if not quiet:
-        console.print("\n🧬 [bold]生物信息学工具检查[/bold]")
+        console.print(_t("tools_check"))
     
     tools = {
         'fastqc': 'FastQC',
@@ -193,43 +224,32 @@ def _check_bioinformatics_tools(verbose, quiet):
 def _display_summary(issues, fix_issues):
     """显示诊断摘要"""
     if not issues:
-        panel = Panel(
-            "🎉 [bold green]所有检查都通过了！[/bold green]\n"
-            "Mito-Forge已准备就绪。",
-            title="诊断结果",
-            border_style="green"
-        )
-        console.print(panel)
+        console.print(_t("all_passed"))
+        console.print(_t("ready"))
         return
     
     # 统计问题
     errors = [i for i in issues if i['type'] == 'error']
     warnings = [i for i in issues if i['type'] == 'warning']
     
-    # 创建问题表格
-    table = Table(title="发现的问题", show_header=True, header_style="bold red")
-    table.add_column("类型", style="red")
-    table.add_column("问题", style="yellow")
-    table.add_column("建议", style="cyan")
+    console.print(_t("issues_found"))
+    console.print("=" * 80)
     
-    for issue in issues:
+    for i, issue in enumerate(issues, 1):
         icon = "❌" if issue['type'] == 'error' else "⚠️"
-        table.add_row(
-            f"{icon} {issue['type'].upper()}",
-            issue['message'],
-            issue['suggestion']
-        )
+        console.print(f"{i}. {icon} {issue['type'].upper()}")
+        console.print(f"   {'问题' if os.getenv('MITO_LANG','zh')!='en' else 'Issue'}: {issue['message']}")
+        console.print(f"   {'建议' if os.getenv('MITO_LANG','zh')!='en' else 'Suggestion'}: {issue['suggestion']}")
+        console.print()
     
-    console.print(table)
+    console.print("=" * 80)
     
     # 显示摘要
-    summary = f"发现 {len(errors)} 个错误和 {len(warnings)} 个警告"
+    summary = f"{'发现' if os.getenv('MITO_LANG','zh')!='en' else 'Found'} {len(errors)} {'个错误和' if os.getenv('MITO_LANG','zh')!='en' else 'errors and'} {len(warnings)} {'个警告' if os.getenv('MITO_LANG','zh')!='en' else 'warnings'}"
     if fix_issues:
         summary += "\n正在尝试自动修复..."
     
-    style = "red" if errors else "yellow"
-    panel = Panel(summary, title="诊断摘要", border_style=style)
-    console.print(panel)
+    console.print(f"\n{_t('summary_label')}: {summary}")
 
 def _fix_issues(issues, verbose, quiet):
     """尝试修复问题"""
