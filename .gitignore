@@ -37,6 +37,9 @@ venv.bak/
 *.swo
 *~
 
+# CodeBuddy
+.codebuddy/
+
 # Testing
 .coverage
 .pytest_cache/
@@ -60,6 +63,15 @@ coverage.xml
 .env.test.local
 .env.production.local
 
+# Configuration files with sensitive data
+config.yaml
+config.yml
+secrets.yaml
+secrets.yml
+.mito-forge/
+!examples/*.yaml
+!examples/*.yml
+
 # Mito-Forge specific
 .mito_forge/
 mito_forge_results/
@@ -67,6 +79,29 @@ mito_forge_results/
 *.tmp
 temp/
 tmp/
+
+# Results and output directories (contain generated analysis results)
+results/
+out_*/
+qc_results/
+assembly_results/
+annotation_results/
+test_results/
+user_analysis_results/
+error_check/
+
+# Work directories (contain temporary task data and logs)
+work/
+
+# Log files in subdirectories
+**/logs/
+
+# Model configuration exports (contain API keys)
+**/model_export_*.yaml
+**/model_export_*.yml
+
+# Test snapshots
+**/__snapshots__/
 
 # Bioinformatics data
 *.fastq
@@ -79,6 +114,39 @@ tmp/
 *.gff
 *.gtf
 *.bed
+
+# Large data files
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Python packaging
+wheelhouse/
+dist-packages/
+
+# Node.js (if any frontend components)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Cache directories
+.cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Profiling data
+*.prof
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
 
 # OS
 .DS_Store
