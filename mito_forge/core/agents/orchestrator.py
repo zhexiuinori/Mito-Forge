@@ -156,7 +156,7 @@ class Orchestrator(BaseAgent):
                 # 执行当前阶段
                 result = agent.execute_stage(current_inputs)
                 
-                if result.status == AgentStatus.COMPLETED:
+                if result.status == AgentStatus.FINISHED:
                     # 收集结果并传递给下一阶段
                     pipeline_results[stage_name] = result.outputs
                     current_inputs.update(result.outputs)

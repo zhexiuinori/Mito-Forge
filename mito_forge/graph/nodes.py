@@ -16,6 +16,16 @@ from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# === 引入真实评估所需的 Agents 与类型（最小侵入） ===
+try:
+    from ..core.agents.qc_agent import QCAgent
+    from ..core.agents.assembly_agent import AssemblyAgent
+    from ..core.agents.annotation_agent import AnnotationAgent
+    from ..core.agents.types import TaskSpec
+except Exception:
+    QCAgent = AssemblyAgent = AnnotationAgent = None
+    TaskSpec = None
+
 def supervisor_node(state: PipelineState) -> PipelineState:
     """
     Supervisor Agent - 智能分析输入数据并制定最优执行策略
@@ -40,13 +50,76 @@ def supervisor_node(state: PipelineState) -> PipelineState:
         # 获取kingdom参数，优先从config中获取，然后从inputs中获取
         kingdom = config.get("kingdom", inputs.get("kingdom", "animal"))
         
+        # 若已提供来自 selection 的工具计划，则优先采用，降低重复判断
+        tool_plan = (config or {}).get("tool_plan")
+        preselected_tool_chain = None
+        if isinstance(tool_plan, dict):
+            try:
+                # 将 plan 映射为 nodes 内部使用的 tool_chain 结构
+                qc_tool = None
+                if isinstance(tool_plan.get("qc"), list) and tool_plan["qc"]:
+                    qc_tool = tool_plan["qc"][0]
+                elif isinstance(tool_plan.get("qc"), str):
+                    qc_tool = tool_plan["qc"]
+                assembler_tool = None
+                asm = tool_plan.get("assembler") or {}
+                if isinstance(asm, dict) and asm.get("name"):
+                    assembler_tool = asm["name"]
+                elif isinstance(asm, str):
+                    assembler_tool = asm
+                polishing_tool = None
+                pol_list = tool_plan.get("polishers") or []
+                if isinstance(pol_list, list) and pol_list:
+                    # nodes 的策略里只保留一个标识，实际抛光细节在执行阶段细化
+                    polishing_tool = pol_list[0]
+                preselected_tool_chain = {
+                    "qc": qc_tool or "fastqc",
+                    "assembly": assembler_tool or "spades",
+                    "polishing": polishing_tool,  # 可为 None
+                    "annotation": "mitos",        # 保持默认，后续可由 kingdom 细化
+                }
+                # 将该链路预先写入 config，供后续阶段直接使用
+                state["config"]["tool_chain"] = preselected_tool_chain
+            except Exception as _e:
+                logger.warning(f"Failed to consume provided tool_plan, will fall back to internal strategy: {_e}")
+                preselected_tool_chain = None
+
         # === 第一步：深度数据分析 ===
         logger.info("Performing comprehensive data analysis...")
         data_profile = _analyze_input_data_comprehensive(inputs, workdir)
         
-        # === 第二步：智能策略选择 ===
+        # === 第二步：智能策略选择或采用预选方案 ===
         logger.info("Selecting optimal execution strategy...")
-        optimal_strategy = _select_optimal_strategy(data_profile, kingdom)
+        if preselected_tool_chain:
+            # 以预选链路构造一个与内部格式兼容的“已选策略”
+            # 合并 tool_plan 中 assembler.params 到 parameters.{assembler}
+            asm_params = {}
+            try:
+                _asm = (tool_plan or {}).get("assembler") or {}
+                if isinstance(_asm, dict):
+                    _p = _asm.get("params") or {}
+                    if isinstance(_p, dict):
+                        asm_params = _p
+            except Exception:
+                asm_params = {}
+            assembler_name = preselected_tool_chain.get("assembly") or "spades"
+            parameters = {}
+            if assembler_name and asm_params:
+                parameters[assembler_name] = dict(asm_params)
+
+            optimal_strategy = {
+                "name": "Preselected_From_ToolPlan",
+                "tools": preselected_tool_chain,
+                "parameters": parameters,
+                "fallbacks": {
+                    "assembly": ["flye", "spades", "unicycler"],
+                    "annotation": ["mitos", "geseq"]
+                },
+                "confidence": 0.9,
+                "success_probability": 0.9
+            }
+        else:
+            optimal_strategy = _select_optimal_strategy(data_profile, kingdom)
         
         # === 第三步：资源需求评估 ===
         logger.info("Estimating resource requirements...")
@@ -159,17 +232,75 @@ def qc_node(state: PipelineState) -> PipelineState:
         # 模拟 QC 执行（实际会调用 FastQC 等工具）
         qc_results = _run_qc_analysis(inputs, qc_dir, config)
         
+        # 可选：调用真实 QC Agent 进行 LLM 评估（按分级 quick/detailed/expert 调整深度）
+        ai_metrics = {}
+        ai_file = None
+        try:
+            if QCAgent and TaskSpec and state["config"].get("enable_llm_eval", True):
+                detail_level = os.getenv("MITO_DETAIL_LEVEL", "quick").lower()
+                qc_agent = QCAgent(state["config"])
+                # 初评（quick/detailed/expert 都会调用一次）
+                base_cfg = {"read_type": "illumina", "detail_level": detail_level, "llm_depth": 1}
+                task = TaskSpec(
+                    task_id="qc_pipeline",
+                    agent_type="qc",
+                    inputs={"reads": str(inputs["reads"])},
+                    config=base_cfg,
+                    workdir=qc_dir
+                )
+                _res = qc_agent.execute_task(task)
+                _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
+                merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
+                # expert 追加复核一轮（第二次调用），合并结果
+                if detail_level == "expert":
+                    review_cfg = {"read_type": "illumina", "detail_level": "expert", "llm_depth": 2, "review_of": merged_ai}
+                    review_task = TaskSpec(
+                        task_id="qc_pipeline_review",
+                        agent_type="qc",
+                        inputs={"reads": str(inputs["reads"]), "review": True},
+                        config=review_cfg,
+                        workdir=qc_dir
+                    )
+                    _res2 = qc_agent.execute_task(review_task)
+                    _ai2 = (_res2.outputs or {}).get("ai_analysis", {}) or {}
+                    if isinstance(_ai2, dict):
+                        merged_ai["review"] = _ai2
+                # 提取关键指标（优先用复核结果的评分/等级/摘要）
+                _qa = (merged_ai.get("quality_assessment") or merged_ai.get("qc_quality") or {})
+                # 回退逻辑：如果复核层级未提供标准键，尝试从 review 中取
+                if not _qa and isinstance(merged_ai.get("review"), dict):
+                    _qa = (merged_ai["review"].get("quality_assessment") or merged_ai["review"].get("qc_quality") or {})
+                ai_metrics = {
+                    "ai_quality_score": _qa.get("overall_score"),
+                    "ai_grade": _qa.get("grade"),
+                    "ai_summary": _qa.get("summary")
+                }
+                # 保存评估文件
+                ai_file = str(qc_dir / "qc_ai_analysis.json")
+                with open(ai_file, "w", encoding="utf-8") as f:
+                    json.dump(merged_ai, f, ensure_ascii=False, indent=2)
+        except Exception as _e:
+            logger.warning(f"QC LLM评估失败，使用模拟结果: {_e}")
+        
         # 准备输出
+        files_dict = {
+            "qc_report": str(qc_dir / "fastqc_report.html"),
+            "clean_reads": qc_results.get("clean_reads", inputs["reads"])
+        }
+        if ai_file:
+            files_dict["qc_ai_analysis"] = ai_file
+        
+        metrics_dict = {
+            "qc_score": qc_results["qc_score"],
+            "total_reads": qc_results["total_reads"],
+            "clean_reads": qc_results["clean_reads_count"]
+        }
+        # 合并 AI 评估指标
+        metrics_dict.update({k: v for k, v in ai_metrics.items() if v is not None})
+        
         outputs = StageOutputs(
-            files={
-                "qc_report": str(qc_dir / "fastqc_report.html"),
-                "clean_reads": qc_results.get("clean_reads", inputs["reads"])
-            },
-            metrics={
-                "qc_score": qc_results["qc_score"],
-                "total_reads": qc_results["total_reads"],
-                "clean_reads": qc_results["clean_reads_count"]
-            },
+            files=files_dict,
+            metrics=metrics_dict,
             metadata={
                 "tool": "fastqc",
                 "version": "0.12.1"
@@ -211,6 +342,15 @@ def assembly_node(state: PipelineState) -> PipelineState:
         qc_outputs = state["stage_outputs"].get("qc", {})
         reads_file = qc_outputs.get("files", {}).get("clean_reads", state["inputs"]["reads"])
         
+        # 若清洗后的reads文件不存在，则回退到原始reads
+        try:
+            if not Path(reads_file).exists():
+                logger.warning(f"Clean reads not found at {reads_file}, falling back to original input reads")
+                reads_file = state["inputs"]["reads"]
+        except Exception as _e:
+            logger.warning(f"Failed to validate clean_reads path ({reads_file}), fallback to original reads: {_e}")
+            reads_file = state["inputs"]["reads"]
+        
         # 创建组装工作目录
         assembly_dir = workdir / "02_assembly"
         assembly_dir.mkdir(parents=True, exist_ok=True)
@@ -228,20 +368,75 @@ def assembly_node(state: PipelineState) -> PipelineState:
             config.get("kingdom", "animal")
         )
         
+        # 可选：调用真实 Assembly Agent 进行 LLM 评估（按分级 quick/detailed/expert 调整深度）
+        asm_ai_metrics = {}
+        asm_ai_file = None
+        try:
+            if AssemblyAgent and TaskSpec and state["config"].get("enable_llm_eval", True):
+                detail_level = os.getenv("MITO_DETAIL_LEVEL", "quick").lower()
+                asm_agent = AssemblyAgent(state["config"])
+                detected_rt = state["config"].get("detected_read_type", "illumina")
+                # 初评一次（所有分级都会执行）
+                base_cfg = {"assembler": assembler, "detail_level": detail_level, "llm_depth": 1}
+                task = TaskSpec(
+                    task_id="assembly_pipeline",
+                    agent_type="assembly",
+                    inputs={"reads": str(reads_file), "read_type": detected_rt, "kingdom": state["config"].get("kingdom", "animal")},
+                    config=base_cfg,
+                    workdir=assembly_dir
+                )
+                _res = asm_agent.execute_task(task)
+                _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
+                merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
+                # expert 追加一轮复核
+                if detail_level == "expert":
+                    review_cfg = {"assembler": assembler, "detail_level": "expert", "llm_depth": 2, "review_of": merged_ai}
+                    review_task = TaskSpec(
+                        task_id="assembly_pipeline_review",
+                        agent_type="assembly",
+                        inputs={"reads": str(reads_file), "read_type": detected_rt, "kingdom": state["config"].get("kingdom", "animal"), "review": True},
+                        config=review_cfg,
+                        workdir=assembly_dir
+                    )
+                    _res2 = asm_agent.execute_task(review_task)
+                    _ai2 = (_res2.outputs or {}).get("ai_analysis", {}) or {}
+                    if isinstance(_ai2, dict):
+                        merged_ai["review"] = _ai2
+                _aq = (merged_ai.get("assembly_quality") or merged_ai.get("assembly_assessment") or {})
+                if not _aq and isinstance(merged_ai.get("review"), dict):
+                    _aq = (merged_ai["review"].get("assembly_quality") or merged_ai["review"].get("assembly_assessment") or {})
+                asm_ai_metrics = {
+                    "ai_quality_score": _aq.get("overall_score"),
+                    "ai_grade": _aq.get("grade"),
+                    "ai_summary": _aq.get("summary")
+                }
+                asm_ai_file = str(assembly_dir / "assembly_ai_analysis.json")
+                with open(asm_ai_file, "w", encoding="utf-8") as f:
+                    json.dump(merged_ai, f, ensure_ascii=False, indent=2)
+        except Exception as _e:
+            logger.warning(f"Assembly LLM评估失败，使用模拟结果: {_e}")
+        
         # 准备输出
+        files_dict = {
+            "contigs": str(assembly_results["contigs"]),
+            "mito_candidates": str(mito_candidates["fasta"]),
+            "assembly_stats": str(assembly_dir / "stats.json")
+        }
+        if asm_ai_file:
+            files_dict["assembly_ai_analysis"] = asm_ai_file
+        
+        metrics_dict = {
+            "n50": assembly_results["n50"],
+            "total_contigs": assembly_results["num_contigs"],
+            "mito_candidates_count": mito_candidates["count"],
+            "largest_contig": assembly_results["largest_contig"],
+            "is_circular": mito_candidates.get("is_circular", False)
+        }
+        metrics_dict.update({k: v for k, v in asm_ai_metrics.items() if v is not None})
+        
         outputs = StageOutputs(
-            files={
-                "contigs": str(assembly_results["contigs"]),
-                "mito_candidates": str(mito_candidates["fasta"]),
-                "assembly_stats": str(assembly_dir / "stats.json")
-            },
-            metrics={
-                "n50": assembly_results["n50"],
-                "total_contigs": assembly_results["num_contigs"],
-                "mito_candidates_count": mito_candidates["count"],
-                "largest_contig": assembly_results["largest_contig"],
-                "is_circular": mito_candidates.get("is_circular", False)
-            },
+            files=files_dict,
+            metrics=metrics_dict,
             metadata={
                 "tool": assembler,
                 "version": assembly_results.get("version", "unknown")
@@ -302,19 +497,72 @@ def annotation_node(state: PipelineState) -> PipelineState:
         # 执行注释
         annotation_results = _run_annotation(mito_fasta, annotation_dir, config)
         
+        # 可选：调用真实 Annotation Agent 进行 LLM 评估（按分级 quick/detailed/expert 调整深度）
+        ann_ai_metrics = {}
+        ann_ai_file = None
+        try:
+            if AnnotationAgent and TaskSpec and state["config"].get("enable_llm_eval", True):
+                detail_level = os.getenv("MITO_DETAIL_LEVEL", "quick").lower()
+                ann_agent = AnnotationAgent(state["config"])
+                base_cfg = {"annotator": "mitos", "detail_level": detail_level, "llm_depth": 1}
+                task = TaskSpec(
+                    task_id="annotation_pipeline",
+                    agent_type="annotation",
+                    inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2)},
+                    config=base_cfg,
+                    workdir=annotation_dir
+                )
+                _res = ann_agent.execute_task(task)
+                _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
+                merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
+                # expert 再进行一轮复核
+                if detail_level == "expert":
+                    review_cfg = {"annotator": "mitos", "detail_level": "expert", "llm_depth": 2, "review_of": merged_ai}
+                    review_task = TaskSpec(
+                        task_id="annotation_pipeline_review",
+                        agent_type="annotation",
+                        inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2), "review": True},
+                        config=review_cfg,
+                        workdir=annotation_dir
+                    )
+                    _res2 = ann_agent.execute_task(review_task)
+                    _ai2 = (_res2.outputs or {}).get("ai_analysis", {}) or {}
+                    if isinstance(_ai2, dict):
+                        merged_ai["review"] = _ai2
+                _aq = (merged_ai.get("annotation_quality") or merged_ai.get("annotation_assessment") or {})
+                if not _aq and isinstance(merged_ai.get("review"), dict):
+                    _aq = (merged_ai["review"].get("annotation_quality") or merged_ai["review"].get("annotation_assessment") or {})
+                ann_ai_metrics = {
+                    "ai_quality_score": _aq.get("overall_score"),
+                    "ai_grade": _aq.get("grade"),
+                    "ai_summary": _aq.get("summary")
+                }
+                ann_ai_file = str(annotation_dir / "annotation_ai_analysis.json")
+                with open(ann_ai_file, "w", encoding="utf-8") as f:
+                    json.dump(merged_ai, f, ensure_ascii=False, indent=2)
+        except Exception as _e:
+            logger.warning(f"Annotation LLM评估失败，使用模拟结果: {_e}")
+        
         # 准备输出
+        files_dict = {
+            "gff": str(annotation_results["gff"]),
+            "genbank": str(annotation_results["genbank"]),
+            "annotation_table": str(annotation_results["table"])
+        }
+        if ann_ai_file:
+            files_dict["annotation_ai_analysis"] = ann_ai_file
+        
+        metrics_dict = {
+            "genes_found": annotation_results["gene_count"],
+            "trna_count": annotation_results["trna_count"],
+            "rrna_count": annotation_results["rrna_count"],
+            "annotation_completeness": annotation_results["completeness"]
+        }
+        metrics_dict.update({k: v for k, v in ann_ai_metrics.items() if v is not None})
+        
         outputs = StageOutputs(
-            files={
-                "gff": str(annotation_results["gff"]),
-                "genbank": str(annotation_results["genbank"]),
-                "annotation_table": str(annotation_results["table"])
-            },
-            metrics={
-                "genes_found": annotation_results["gene_count"],
-                "trna_count": annotation_results["trna_count"],
-                "rrna_count": annotation_results["rrna_count"],
-                "annotation_completeness": annotation_results["completeness"]
-            },
+            files=files_dict,
+            metrics=metrics_dict,
             metadata={
                 "tool": "mitos",
                 "genetic_code": config.get("genetic_code", 2)
@@ -667,7 +915,7 @@ def _estimate_resource_requirements(data_profile: Dict[str, Any], strategy: Dict
         "total_time_estimate": total_time,
         "recommended_cpu_cores": base_req["cpu_cores"],
         "disk_space_gb": file_size_gb * 5,  # 5x for intermediate files
-        "resource_efficiency_score": min(1.0, 10 / file_size_gb)  # 效率评分
+        "resource_efficiency_score": min(1.0, 10 / max(file_size_gb, 1e-9))  # 效率评分（防止除零）
     }
 
 def _create_execution_plan(strategy: Dict[str, Any], resource_plan: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
@@ -948,8 +1196,14 @@ def _select_strategy(read_type: str, kingdom: str) -> Dict[str, Any]:
     return _select_optimal_strategy(mock_profile, kingdom_enum)
 
 def _run_qc_analysis(inputs: Dict[str, Any], qc_dir: Path, config: Dict[str, Any]) -> Dict[str, Any]:
-    """执行 QC 分析（模拟）"""
-    # 实际实现会调用 FastQC 等工具
+    """执行 QC 分析（模拟，应用 plan 参数并记录）"""
+    # 实际实现会调用 FastQC 等工具；这里记录参数以便测试验证
+    try:
+        qc_tool = (config.get("tool_chain") or {}).get("qc", "fastqc")
+        params = (config.get("tool_parameters") or {}).get(qc_tool, {})
+        (qc_dir / "qc_used_params.json").write_text(json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
     return {
         "qc_score": 0.92,
         "total_reads": 50000,

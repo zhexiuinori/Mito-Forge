@@ -1,0 +1,328 @@
+SPAdes安装及使用说明
+时间：2018-10-19    |    阅读量：28544
+1、SPAdes简介
+1.1 支持的数据类型
+
+当前版本的SPAdes，输入文件可以是Illumina或者IonTorrent数据并且，可以结合PacBio的数据进行组装。
+
+SPAdes的3.8.2版本，支持paired-end reads, mate-pairs and unpaired reads。多个paired-end 和mate-pair文库的数据可以同时输入。SPAdes最初开发的目的适用于小的基因组组装，测试都是基于单细胞和标准的细菌及真菌数据。
+
+SPAdes 3.8.2版本，包含有一个宏基因组分析流程metaSPAdes和一个从WGS中提取和组装质粒的流程plasmidSPAdes，另外，SPAdes 有独立的组装多倍体杂合基因和TruSeq barcode组装的模块。
+
+
+
+1.2 SPAdes 流程
+
+SPAdes有一些单独的模块：
+
+a.  BayesHammer---用于Illumina reads的read error correction 工具
+
+b. IonHammer--- 用于IonTorrent 数据的reads error correction 工具
+
+c. SPAdes---迭代 short-read 基因组组装模块；K值根据read 长度自动选择
+
+d. MismatchCorrector--- 用于改善组装得到的contigs和scaffolds中的mismatch 和short indel率的工具
+
+e. dipSPAdes---组装多倍体杂合基因组的分析模块
+
+f. truSPAdes---用于Illumina 产生的short reads的组装
+
+推荐使用 BayesHammer/IonHammer 来获取高质量的组装结果。
+
+
+2. SPAdes的安装
+
+系统要求：
+
+(1) 64-bit Linux
+
+(2)  安装Python （支持的版本有2.4，2.5，2.6， 2.7， 3.2， 3.3， 3.4 和 3.5）
+
+下载地址：http://spades.bioinf.spbau.ru/release3.8.2/SPAdes-3.8.2-Linux.tar.gz 下载后解压即可：
+
+tar -xzf SPAdes-3.8.2-Linux.tar.gz
+
+cd SPAdes-3.8.2-Linux/bin/
+
+
+测试是否可以正常运行：
+
+./spades.py --test
+
+如果输出的信息最后为：
+
+===== Assembling finished. * Corrected reads are in spades_test/corrected/ * Assembled contigs are in spades_test/contigs.fasta * Assembled scaffolds are in spades_test/scaffolds.fasta======= SPAdes pipeline finished.SPAdes log can be found here: /home/andrey/ablab/algorithmic-biology/assembler/spades_test/spades.logThank you for using SPAdes!
+
+则说明软件可以正常运行。
+
+
+
+3. SPAdes的使用
+
+3.1 输入文件
+
+输入文件可以是paired-end reads, mate-pairs and single (unpaired) reads in FASTA and FASTQ。对于IonTorrent 数据输入文件可以是unmapped BAM 文件。然而，如果要做error correction, reads应该是FASTQ 或者 BAM文件格式。
+
+Illumina 数据和IonTorrent 文库的数据不能放在一起组装，其他类型的输入文件可以放在一起。
+
+SPAdes 支持仅有 mate-pair的组装，然而，此时我们推荐使用高质量的mate-pair文库。
+
+
+注意：
+
+1. 不推荐使用SPAdes进行覆盖度太低（小于5x）的PacBio reads 组装
+
+2. 不推荐使用SPAdes软件进行大基因组的PacBio reads组装
+
+3. SPAdes输入文件可以是压缩文件
+
+
+PacBio 和 Oxford Nanopore reads
+
+对于PacBio CLR 和 Oxford Nanopore reads 用于混合组装（例如：结合Illumina 或者 IonTorrent数据），此时不需要reads纠错，SPAdes 将使用PacBio CLR 和 Oxford Nanopore reads 用于 gap closure 和处理重复。
+
+对于PacBio 的数据需要是过滤后的subreads，文件格式为 FASTQ/FASTA格式，参数为--pacbio。
+
+
+
+
+3.2 Examples
+
+
+/home/novelbio/software/SPAdes-3.8.2-Linux/bin/spades.py --pe1-1 /home/novelbio/software/SPAdes-3.8.2-Linux/share/spades/test_dataset/ecoli_1K_1.fq.gz --pe1-2 /home/novelbio/software/SPAdes-3.8.2-Linux/share/spades/test_dataset/ecoli_1K_2.fq.gz -o spades_test
+
+
+（1）如果同一文库有多个文件的时候，使用方法如下：
+
+spades.py --pe1-1 lib1_forward_1.fastq --pe1-2 lib1_reverse_1.fastq --pe1-1 lib1_forward_2.fastq --pe1-2 lib1_reverse_2.fastq -o spades_output
+
+注意顺序要一致
+
+
+（2）当输入文件是interlacing paired-end reads 或者 unpaired reads时
+
+spades.py --pe1-12 lib1_1.fastq --pe1-12 lib1_2.fastq --pe1-s lib1_unpaired_1.fastq --pe1-s lib1_unpaired_2.fastq -o spades_output
+
+（3）当输入文件是一些paired-end 和 mate-pair reads时，
+
+paired-end library 1
+
+lib_pe1_left.fastq
+
+lib_pe1_right.fastq
+
+
+mate-pair library 1
+
+lib_mp1_left.fastq
+
+lib_mp1_right.fastq
+
+
+mate-pair library 2
+
+lib_mp2_left.fastq
+
+lib_mp2_right.fastq
+
+
+此时，使用的命令为：
+
+spades.py --pe1-1 lib_pe1_left.fastq --pe1-2 lib_pe1_right.fastq --mp1-1 lib_mp1_left.fastq --mp1-2 lib_mp1_right.fastq --mp2-1 lib_mp2_left.fastq --mp2-2 lib_mp2_right.fastq -o spades_output
+
+
+（4）当有IonTorrent unpaired reads, PacBio CLR和 相应的contigs时
+
+使用的命令为：
+
+spades.py --iontorrent -s it_reads.fastq --pacbio pacbio_clr.fastq --trusted-contigs contigs.fastq -o spades_output
+
+（5）当single-read library 有多个单独的文件时
+
+使用的命令为：
+
+spades.py --s1 unpaired1_1.fastq --s1 unpaired1_2.fastq --s1 unpaired1_3.fastq -o spades_output
+
+
+（6）组装IonTorrent reads
+
+输入格式仅支持FASTQ或者BAM文件。对于IonTorrent数据，k-mer值的选择非常重要，如果数据集覆盖度足够，GC含量不高，那么推荐按照long reads的组装方式（e.g. 组装使用k-mer长度 21,33,55,77,99,127）。然而，由于k-mer长度改变会引起错误率的变化，例如，如果运行SPAdes时，设置k-mer长度为21，33,55,77,然后，使用迭代和更大的k-mer值进行组装，可以使用参数，-restart-from k77 -k 21,33,55,77,99,127 --mismatch-correction -o.
+
+对于特殊的数据集（e.g. 高GC，低覆盖度或者覆盖度不均匀），我们建议使用single-cell 模式（设置--sc 选项）并使用k-mer的长度为21,33,55
+
+
+（7）组装long Illumina paired reads(2x150 and 2x250)
+
+设置迭代的k-mer值，推荐设置--careful 选项，用来减少最终contigs的mismatches数。
+
+不做reads corrected 的组装：  spades.py -k 21,33,55,77 --careful --only-assembler-o spades_output
+
+做reads correct 并组装：spades.py -k 21,33,55,77 --careful-o spades_output
+
+single-cell data set with read lengths 2x150 or 2x250
+
+推荐使用默认的k-mer值，对于single-cell data set SPAdes 选择的k-mer size 21,33,55。
+
+
+4. SPAdes 的输出
+
+/corrected/ 存放使用BayesHammer纠错后的reads，文件名为 *.fastq.gz或者*.fastq
+
+/contigs.fasta contains resulting contigs 组装的contigs序列文件
+
+/scaffolds.fasta contains resulting scaffolds 组装得到的scaffolds序列文件
+
+/assembly_graph.fastg contains SPAdes assembly graph in FASTG format SPAdes组装graph，以FASTG格式存储
+
+/contigs.paths contains paths in the assembly graph corresponding to contigs.fasta (see details below)
+
+/scaffolds.paths contains paths in the assembly graph corresponding to scaffolds.fasta (see details below)
+
+序列ID说明：
+
+>NODE_3_length_237403_cov_243.207_ID_45
+
+3 表示 contig/scaffold的顺序号；237403 表示序列长度；   243.207 表示k-mer的覆盖深度（一般情况下会低于read的覆盖深度）
+
+
+组装结果评估：
+
+可以使用QUAST 软件进行结果的统计（N50，maximum contig length,GC% 等）
+
+
+PREFIX=/ /bin/software/SPAdes-3.10.1/spades_compile.sh
+
+taskSPAdes-dataTypetaskSPAdes-dataType
+
+datadict_getlsDataValues/taskSPAdes-dataType
+
+SPAdes v3.10.1 详细参数
+
+SPAdes genome assembler v3.10.1
+
+
+Usage: /home/novelbio/bianlianle/software/BacteriaAssemble/SPAdes-3.10.1-Linux/bin/spades.py [options] -o
+
+
+Basic options:
+
+-odirectory to store all the resulting files (required)
+
+--sc this flag is required for MDA (single-cell) data
+
+--meta this flag is required for metagenomic sample data
+
+--rna this flag is required for RNA-Seq data
+
+--plasmid runs plasmidSPAdes pipeline for plasmid detection
+
+--iontorrent this flag is required for IonTorrent data
+
+--test runs SPAdes on toy dataset
+
+-h/--help prints this usage message
+
+-v/--version prints version
+
+
+Input data:
+
+--12file with interlaced forward and reverse paired-end reads
+
+-1file with forward paired-end reads
+
+-2file with reverse paired-end reads
+
+-sfile with unpaired reads
+
+--pe<#>-12file with interlaced reads for paired-end library number <#> (<#> = 1,2,..,9)
+
+--pe<#>-1file with forward reads for paired-end library number <#> (<#> = 1,2,..,9)
+
+--pe<#>-2file with reverse reads for paired-end library number <#> (<#> = 1,2,..,9)
+
+--pe<#>-sfile with unpaired reads for paired-end library number <#> (<#> = 1,2,..,9)
+
+--pe<#>-orientation of reads for paired-end library number <#> (<#> = 1,2,..,9;= fr, rf, ff)
+
+--s<#>file with unpaired reads for single reads library number <#> (<#> = 1,2,..,9)
+
+--mp<#>-12file with interlaced reads for mate-pair library number <#> (<#> = 1,2,..,9)
+
+--mp<#>-1file with forward reads for mate-pair library number <#> (<#> = 1,2,..,9)
+
+--mp<#>-2file with reverse reads for mate-pair library number <#> (<#> = 1,2,..,9)
+
+--mp<#>-sfile with unpaired reads for mate-pair library number <#> (<#> = 1,2,..,9)
+
+--mp<#>-orientation of reads for mate-pair library number <#> (<#> = 1,2,..,9;= fr, rf, ff)
+
+--hqmp<#>-12file with interlaced reads for high-quality mate-pair library number <#> (<#> = 1,2,..,9)
+
+--hqmp<#>-1file with forward reads for high-quality mate-pair library number <#> (<#> = 1,2,..,9)
+
+--hqmp<#>-2file with reverse reads for high-quality mate-pair library number <#> (<#> = 1,2,..,9)
+
+--hqmp<#>-sfile with unpaired reads for high-quality mate-pair library number <#> (<#> = 1,2,..,9)
+
+--hqmp<#>-orientation of reads for high-quality mate-pair library number <#> (<#> = 1,2,..,9;= fr, rf, ff)
+
+--nxmate<#>-1file with forward reads for Lucigen NxMate library number <#> (<#> = 1,2,..,9)
+
+--nxmate<#>-2file with reverse reads for Lucigen NxMate library number <#> (<#> = 1,2,..,9)
+
+--sangerfile with Sanger reads
+
+--pacbiofile with PacBio reads
+
+--nanoporefile with Nanopore reads
+
+--tslrfile with TSLR-contigs
+
+--trusted-contigsfile with trusted contigs
+
+--untrusted-contigsfile with untrusted contigs
+
+
+Pipeline options:
+
+--only-error-correction runs only read error correction (without assembling)
+
+--only-assembler runs only assembling (without read error correction)
+
+--careful tries to reduce number of mismatches and short indels
+
+--continue continue run from the last available check-point
+
+--restart-fromrestart run with updated options and from the specified check-point ('ec', 'as', 'k', 'mc')
+
+--disable-gzip-output forces error correction not to compress the corrected reads
+
+--disable-rr disables repeat resolution stage of assembling
+
+
+Advanced options:
+
+--datasetfile with dataset description in YAML format
+
+-t/--threadsnumber of threads
+
+[default: 16]
+
+-m/--memoryRAM limit for SPAdes in Gb (terminates if exceeded)
+
+[default: 250]
+
+--tmp-dirdirectory for temporary files
+
+[default:/tmp]
+
+-k comma-separated list of k-mer sizes (must be odd and
+
+less than 128) [default: 'auto']
+
+--cov-cutoffcoverage cutoff value (a positive float number, or 'auto', or 'off') [default: 'off']
+
+--phred-offsetPHRED quality offset in the input reads (33 or 64)
+
+[default: auto-detect]

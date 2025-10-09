@@ -163,7 +163,7 @@ class SupervisorAgent(BaseAgent):
                 logs={"analysis": self.workdir / "supervisor_analysis.json" if self.workdir else Path("supervisor_analysis.json")}
             )
             
-            self.status = AgentStatus.COMPLETED
+            self.status = AgentStatus.FINISHED
             self.emit_event("stage_complete", stage="analysis", success=True)
             
             return result
@@ -217,7 +217,21 @@ class SupervisorAgent(BaseAgent):
             
             # 使用默认策略作为备用
             logger.warning("🔧 Using default strategy as fallback")
-            return self._get_default_strategy(inputs)
+            fallback = self._get_default_strategy(inputs)
+            # 在默认策略中也注入引用，并写入记忆（引用为空）
+            try:
+                if isinstance(fallback, dict):
+                    fallback.setdefault("references", [])
+                    fallback["references"] = []
+                self.memory_write({
+                    "type": "supervisor_strategy_fallback",
+                    "strategy_name": (fallback or {}).get("strategy", {}).get("name") if isinstance(fallback, dict) else "unknown",
+                    "references": [],
+                    "tags": ["supervisor"]
+                })
+            except Exception:
+                pass
+            return fallback
     
     def _prepare_analysis_input(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """准备分析输入数据"""
@@ -248,6 +262,13 @@ class SupervisorAgent(BaseAgent):
         """调用模型生成策略"""
         # 构建提示词
         prompt = SUPERVISOR_USER_PROMPT.format(**analysis_input)
+        # 记忆查询与RAG增强（自动探测，不可用则回退）
+        try:
+            tags = ["supervisor", analysis_input.get("read_type_hint", "unknown"), analysis_input.get("kingdom", "unknown")]
+            _mem_items = self.memory_query(tags=tags, top_k=3)
+        except Exception:
+            _mem_items = []
+        augmented_prompt, citations = self.rag_augment(prompt, task=None, top_k=4)
         
         # 定义 JSON Schema
         schema = {
@@ -271,7 +292,7 @@ class SupervisorAgent(BaseAgent):
         start_time = time.time()
         
         result = self.generate_llm_json(
-            prompt=prompt,
+            prompt=augmented_prompt,
             system=SUPERVISOR_SYSTEM_PROMPT,
             schema=schema,
             temperature=0.2,
@@ -282,6 +303,20 @@ class SupervisorAgent(BaseAgent):
         elapsed_time = time.time() - start_time
         logger.debug(f"Model call completed in {elapsed_time:.2f}s")
         
+        # 注入引用并写入记忆（静默失败）
+        try:
+            if isinstance(result, dict):
+                result.setdefault("references", [])
+                result["references"] = citations or []
+            self.memory_write({
+                "type": "supervisor_strategy",
+                "strategy_name": (result or {}).get("strategy", {}).get("name") if isinstance(result, dict) else "unknown",
+                "references": citations or [],
+                "tags": ["supervisor"]
+            })
+        except Exception:
+            pass
+
         return result
     
     def _validate_strategy(self, strategy: Dict[str, Any]) -> Dict[str, Any]:
@@ -313,6 +348,12 @@ class SupervisorAgent(BaseAgent):
         # 确保阶段列表不为空
         if not validated["stages"]:
             validated["stages"] = ["qc", "assembly", "annotation", "report"]
+        
+        # 传递引用（如有）到验证后的策略
+        try:
+            validated["references"] = strategy.get("references", [])
+        except Exception:
+            validated["references"] = []
         
         return validated
     

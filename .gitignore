@@ -90,8 +90,15 @@ test_results/
 user_analysis_results/
 error_check/
 
-# Work directories (contain temporary task data and logs)
-work/
+# Work directories - 具体忽略，但保留需要的子目录
+work/*
+!work/chroma/
+!work/models/
+work/qc_cli/
+work/t1/
+work/t2/
+work/test_task_*/
+work/tmp_demo/
 
 # Log files in subdirectories
 **/logs/

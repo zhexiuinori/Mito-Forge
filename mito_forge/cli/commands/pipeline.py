@@ -17,6 +17,22 @@ console = Console()
 
 from ...utils.i18n import tl as _t
 import sys
+from ...utils.selection import (
+    detect_seq_type as sel_detect_seq_type,
+    select_tool_plan as sel_select_tool_plan,
+    build_tool_plan as sel_build_tool_plan,
+)
+
+# ===== 新增：测序类型自动探测 =====
+def detect_seq_type(reads_paths):
+    # 委托到集中模块，保持兼容
+    return sel_detect_seq_type(reads_paths)
+
+# ===== 新增：工具矩阵选择 =====
+def select_tool_plan(seq_type, kingdom=None, input_types=None):
+    # 委托到集中模块，保持兼容
+    return sel_select_tool_plan(seq_type, kingdom=kingdom, input_types=input_types)
+
 def _help(key: str) -> str:
     lang = None
     try:
@@ -44,7 +60,16 @@ def _help(key: str) -> str:
 @click.option("--verbose", "-v", is_flag=True, help=_help("pl_opt_verbose"))
 @click.option("--interactive", is_flag=True, help=_help("pl_opt_interactive"))
 @click.option("--lang", type=click.Choice(["zh","en"]), default="zh", help=_help("pl_opt_lang"))
-def pipeline(reads, output, threads, kingdom, resume, checkpoint, config_file, verbose, interactive, lang):
+@click.option("--detail-level", type=click.Choice(["quick","detailed","expert"]), default="quick", help=_help("pl_opt_detail_level"))
+@click.option(
+    "--seq-type",
+    type=click.Choice(["auto","illumina","ont","pacbio-hifi","pacbio-clr","hybrid"]),
+    default="auto",
+    show_default=True,
+    envvar="MITO_SEQ_TYPE",
+    help="选择测序类型以匹配合适的工具链；可用 auto/illumina/ont/pacbio-hifi/pacbio-clr/hybrid（也可用环境变量 MITO_SEQ_TYPE 覆盖）",
+)
+def pipeline(reads, output, threads, kingdom, resume, checkpoint, config_file, verbose, interactive, lang, detail_level, seq_type):
     """
     运行完整的线粒体基因组组装流水线 / Run the complete mitochondrial genome assembly pipeline
 
@@ -58,6 +83,12 @@ def pipeline(reads, output, threads, kingdom, resume, checkpoint, config_file, v
     """
     
     os.environ["MITO_LANG"] = lang
+    os.environ["MITO_DETAIL_LEVEL"] = detail_level
+    # 计算最终测序类型：CLI 优先，其次环境变量，默认为 auto，然后必要时做自动探测
+    final_seq_type = (seq_type or os.getenv("MITO_SEQ_TYPE") or "auto").lower()
+    if final_seq_type == "auto":
+        final_seq_type = detect_seq_type([reads])
+    os.environ["MITO_SEQ_TYPE"] = final_seq_type
     # 设置日志
     log_level = "DEBUG" if verbose else "INFO"
     output_dir = Path(output)
@@ -91,6 +122,25 @@ def pipeline(reads, output, threads, kingdom, resume, checkpoint, config_file, v
                 "kingdom": kingdom,  # 同时也放在config中作为备份
                 "output_dir": str(output_dir)
             }
+            # 将工具计划注入配置，供后续各 Agent/调度使用
+            try:
+                # 推断输入文件类型
+                def _detect_input_types(path_str: str):
+                    s = str(path_str).lower()
+                    if s.endswith((".fastq", ".fq")):
+                        return "FASTQ"
+                    if s.endswith((".fasta", ".fa")):
+                        return "FASTA"
+                    if s.endswith(".bam"):
+                        return "BAM"
+                    return "UNKNOWN"
+                input_types = list({ _detect_input_types(reads) })
+                plan = sel_build_tool_plan(final_seq_type, kingdom, reads)
+                if isinstance(plan, dict):
+                    config["tool_plan"] = plan
+            except Exception:
+                # 失败时不阻断主流程
+                pass
             
             # 加载配置文件
             if config_file:
@@ -153,6 +203,7 @@ def show_pipeline_summary(state, output_dir, lang):
     
     # 使用简单的文本格式显示，避免表格宽度问题
     console.print(f"\n[bold blue]{_t(lang, 'summary_title')}[/bold blue]")
+    _detail = os.getenv("MITO_DETAIL_LEVEL", "quick").lower()
     console.print("=" * 50)
     
     console.print(f"[cyan]{_t(lang, 'pipeline_id')}:[/cyan] {state['pipeline_id']}")
@@ -185,6 +236,25 @@ def show_pipeline_summary(state, output_dir, lang):
                         console.print(f"    • {k}: {v}")
                 if len(metrics) > 3:
                     console.print(f"    • ... {len(metrics)-3} {_t(lang, 'more_metrics')}")
+                
+                # LLM评估摘要（若存在）
+                ai_q = metrics.get("ai_quality_score")
+                ai_grade = metrics.get("ai_grade")
+                ai_summary = metrics.get("ai_summary")
+                if (ai_q is not None) or ai_grade or ai_summary:
+                    console.print(f"  [magenta]{'LLM评估' if lang!='en' else 'LLM Evaluation'}:[/magenta]")
+                    if ai_q is not None:
+                        if isinstance(ai_q, float):
+                            console.print(f"    • {'质量分' if lang!='en' else 'Quality score'}: {ai_q:.3f}")
+                        else:
+                            console.print(f"    • {'质量分' if lang!='en' else 'Quality score'}: {ai_q}")
+                    if ai_grade:
+                        console.print(f"    • {'等级' if lang!='en' else 'Grade'}: {ai_grade}")
+                    if ai_summary:
+                        summary_str = str(ai_summary)
+                        if len(summary_str) > 120:
+                            summary_str = summary_str[:120] + "..."
+                        console.print(f"    • {'摘要' if lang!='en' else 'Summary'}: {summary_str}")
             
             # 显示输出文件
             if files:
@@ -194,6 +264,59 @@ def show_pipeline_summary(state, output_dir, lang):
                     console.print(f"    • {k}: {file_name}")
                 if len(files) > 3:
                     console.print(f"    • ... {len(files)-3} {_t(lang, 'more_files')}")
+                # 分级显示详细/专家模式：读取 AI 分析详情
+                if _detail in ("detailed", "expert"):
+                    analysis_path = None
+                    try:
+                        for fk, fv in files.items():
+                            name = str(Path(fv).name).lower()
+                            if "ai_analysis" in name or ("analysis" in name and "ai" in name):
+                                analysis_path = fv
+                                break
+                        if analysis_path:
+                            with open(analysis_path, "r", encoding="utf-8") as _f:
+                                _ai = json.load(_f)
+                            console.print(f"  [magenta]{'详细评估' if lang!='en' else 'Detailed Evaluation'}:[/magenta]")
+                            issues = _ai.get("issues") or _ai.get("problems") or []
+                            recs = _ai.get("recommendations") or _ai.get("suggestions") or []
+                            suitability = _ai.get("suitability") or _ai.get("fit") or ""
+                            next_steps = _ai.get("next_steps") or _ai.get("actions") or []
+                            if issues:
+                                console.print(f"    • {'问题' if lang!='en' else 'Issues'}:")
+                                for it in issues[:5]:
+                                    console.print(f"      - {it}")
+                                if len(issues) > 5:
+                                    console.print(f"      - ... {len(issues)-5}")
+                            if recs:
+                                console.print(f"    • {'建议' if lang!='en' else 'Recommendations'}:")
+                                for rc in recs[:5]:
+                                    console.print(f"      - {rc}")
+                                if len(recs) > 5:
+                                    console.print(f"      - ... {len(recs)-5}")
+                            if suitability:
+                                console.print(f"    • {'适用性' if lang!='en' else 'Suitability'}: {suitability}")
+                            if next_steps:
+                                console.print(f"    • {'下一步' if lang!='en' else 'Next steps'}:")
+                                for ns in next_steps[:5]:
+                                    console.print(f"      - {ns}")
+                                if len(next_steps) > 5:
+                                    console.print(f"      - ... {len(next_steps)-5}")
+                            if _detail == "expert":
+                                reasoning = _ai.get("reasoning") or _ai.get("analysis") or ""
+                                params = _ai.get("params") or _ai.get("thresholds") or {}
+                                if reasoning:
+                                    rstr = str(reasoning)
+                                    if len(rstr) > 200:
+                                        rstr = rstr[:200] + "..."
+                                    console.print(f"    • {'推理' if lang!='en' else 'Reasoning'}: {rstr}")
+                                if params:
+                                    console.print(f"    • {'参数/阈值' if lang!='en' else 'Params/Thresholds'}:")
+                                    for pk, pv in list(params.items())[:5]:
+                                        console.print(f"      - {pk}: {pv}")
+                                    if len(params) > 5:
+                                        console.print(f"      - ... {len(params)-5}")
+                    except Exception:
+                        pass
     
     console.print()
     

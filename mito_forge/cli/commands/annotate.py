@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ...core.agents.annotation_agent import AnnotationAgent
+from ...core.agents.types import TaskSpec
 from ...utils.config import Config
 from ...utils.exceptions import MitoForgeError
 
@@ -50,10 +51,14 @@ def _t(key):
 from ...utils.i18n import t as _t
 
 def _help(key):
-    import sys, os as _os
-    lang = "en" if ("--lang" in sys.argv and "en" in sys.argv) else _os.getenv("MITO_LANG", "zh")
-    from ...utils.i18n import t as _tt
-    return _tt(key, lang)
+    # 健壮回退：解析语言与翻译若失败，直接返回原始键
+    try:
+        import sys, os as _os
+        lang = "en" if ("--lang" in sys.argv and "en" in sys.argv) else _os.getenv("MITO_LANG", "zh")
+        from ...utils.i18n import t as _tt
+        return _tt(key, lang)
+    except Exception:
+        return key
 
 @click.command(help=_help("ann.help.desc"))
 @click.argument('input_file', type=click.Path(exists=True))
@@ -152,21 +157,38 @@ def annotate(ctx, input_file, output_dir, annotation_tool, threads, genetic_code
         
         # 执行注释
         with console.status(f"[bold green]{_t('ann_running')}") if not quiet else console:
-            results = annotation_agent.annotate(
-                input_file=input_file,
-                output_dir=str(output_path)
+            task = TaskSpec(
+                task_id="annotate_cli",
+                agent_type="annotate",
+                inputs={"assembly_file": str(input_file), "tool": annotation_tool},
+                config={
+                    "threads": threads,
+                    "genetic_code": genetic_code,
+                    "reference_db": reference_db,
+                    "verbose": verbose
+                },
+                workdir=str(output_path)
             )
+            stage_result = annotation_agent.execute_task(task)
+            # 失败处理：若 Agent 返回失败，退出码为 1
+            # 失败处理：若 Agent 返回失败，退出码为 1（兼容枚举/字符串）
+            status_raw = getattr(stage_result, "status", None)
+            status_name = (getattr(status_raw, "name", status_raw) or "").lower()
+            success = getattr(stage_result, "success", True)
+            if (status_name in {"failed", "error"}) or (success is False):
+                raise SystemExit(1)
         
         # 显示结果
         if not quiet:
             console.print(f"✅ [bold green]{_t('ann_done')}[/bold green]\n")
             console.print(f"📊 {_t('ann_stats')}:")
-            console.print(f"  • 蛋白编码基因: {results.get('protein_genes', 'N/A')}")
-            console.print(f"  • tRNA基因: {results.get('trna_genes', 'N/A')}")
-            console.print(f"  • rRNA基因: {results.get('rrna_genes', 'N/A')}")
-            console.print(f"  • 总基因数: {results.get('total_genes', 'N/A')}")
-            console.print(f"\n📄 {_t('ann_file')}: [link]{output_path}/annotation.gff[/link]")
-            console.print(f"📄 {_t('gb_file')}: [link]{output_path}/annotation.gb[/link]")
+            ann_data = getattr(stage_result, "outputs", {}).get('annotation_results', {})
+            console.print(f"  • 蛋白编码基因: {ann_data.get('protein_genes', 'N/A')}")
+            console.print(f"  • tRNA基因: {ann_data.get('trna_genes', 'N/A')}")
+            console.print(f"  • rRNA基因: {ann_data.get('rrna_genes', 'N/A')}")
+            console.print(f"  • 总基因数: {ann_data.get('total_genes', 'N/A')}")
+            console.print(f"\n📄 {_t('ann_file')}: [link]{ann_data.get('gff_file', str(output_path / 'annotation.gff'))}[/link]")
+            console.print(f"📄 {_t('gb_file')}: [link]{ann_data.get('gb_file', str(output_path / 'annotation.gb'))}[/link]")
         
         return 0
         

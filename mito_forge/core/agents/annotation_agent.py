@@ -3,6 +3,7 @@
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -209,7 +210,7 @@ class AnnotationAgent(BaseAgent):
                 logs={"annotation_stats": self.workdir / "annotation_stats.json" if self.workdir else Path("annotation_stats.json")}
             )
             
-            self.status = AgentStatus.COMPLETED
+            self.status = AgentStatus.FINISHED
             self.emit_event("stage_complete", stage="annotation", success=True)
             
             return result
@@ -288,6 +289,31 @@ class AnnotationAgent(BaseAgent):
         
         # 构建提示词
         prompt = ANNOTATION_ANALYSIS_PROMPT.format(**analysis_input)
+        detail_level = str((self.config or {}).get("detail_level") or os.getenv("MITO_DETAIL_LEVEL", "quick")).lower()
+        if detail_level == "detailed":
+            extra_guidance = "请输出完整且结构化的结果：每类要点尽量给出3-5条，包含关键阈值与推荐参数，推理要简洁但覆盖依据。"
+        else:
+            extra_guidance = "请保持精简：每类要点不超过2条，一句话总结，推理尽量短。"
+        prompt = f"{prompt}\n\n### 输出风格要求\n{extra_guidance}"
+        
+        # 注入记忆与 RAG（自动探测，可用即启用；不可用时静默跳过）
+        try:
+            tags = ["annotation", analysis_input.get("annotator", "unknown")]
+            mem_items = self.memory_query(tags=tags, top_k=3)
+            if mem_items:
+                mem_lines = ["历史摘要:"]
+                for it in mem_items[:3]:
+                    summ = str(it.get("summary") or it.get("value") or "")
+                    if len(summ) > 200:
+                        summ = summ[:200] + "..."
+                    mem_lines.append(f"- {summ}")
+                prompt = prompt + "\n\n" + "\n".join(mem_lines)
+        except Exception:
+            pass
+        try:
+            prompt, citations = self.rag_augment(prompt, task=self.current_task, top_k=4)
+        except Exception:
+            citations = []
         
         # 定义 JSON Schema
         schema = {
@@ -308,12 +334,15 @@ class AnnotationAgent(BaseAgent):
         
         try:
             # 调用 AI 模型
+            # 根据分级调整生成参数
+            temp = 0.1 if detail_level == "quick" else 0.2
+            max_tok = 1800 if detail_level == "quick" else 3500
             ai_analysis = self.generate_llm_json(
                 prompt=prompt,
                 system=ANNOTATION_SYSTEM_PROMPT,
                 schema=schema,
-                temperature=0.1,
-                max_tokens=3500
+                temperature=temp,
+                max_tokens=max_tok
             )
             
             # 保存 AI 分析结果
@@ -322,12 +351,54 @@ class AnnotationAgent(BaseAgent):
                 with open(analysis_file, 'w', encoding='utf-8') as f:
                     json.dump(ai_analysis, f, indent=2, ensure_ascii=False)
             
+            # 写长期记忆（Mem0），包含注释质量评估摘要与引用（若有）
+            try:
+                aq = ai_analysis.get("annotation_quality", {}) if isinstance(ai_analysis, dict) else {}
+                summary = aq.get("summary")
+                score = aq.get("overall_score")
+                grade = aq.get("grade")
+                self.memory_write({
+                    "agent": "annotation",
+                    "task_id": (self.current_task.task_id if self.current_task else "annotation"),
+                    "tags": ["annotation", analysis_input.get("annotator","unknown")],
+                    "summary": summary or "",
+                    "metrics": {"score": score, "grade": grade},
+                    "citations": citations if isinstance(citations, list) else [],
+                })
+            except Exception:
+                pass
+            
+            # 注入 RAG 引用到分析结果
+            try:
+                if isinstance(ai_analysis, dict) and isinstance(citations, list) and citations:
+                    ai_analysis["references"] = citations
+            except Exception:
+                pass
             return ai_analysis
             
         except Exception as e:
             logger.error(f"AI analysis failed: {e}")
-            # 返回基础分析结果
-            return self._get_basic_analysis(annotation_results)
+            # 返回基础分析结果并注入引用
+            citations = citations if isinstance(citations, list) else []
+            basic = self._get_basic_analysis(annotation_results)
+            try:
+                if citations:
+                    basic["references"] = citations
+                aq = basic.get("annotation_quality", {}) if isinstance(basic, dict) else {}
+                summary = aq.get("summary")
+                score = aq.get("overall_score")
+                grade = aq.get("grade")
+                self.memory_write({
+                    "agent": "annotation",
+                    "task_id": (self.current_task.task_id if self.current_task else "annotation"),
+                    "tags": ["annotation", annotation_results.get("annotator","unknown")],
+                    "summary": summary or "",
+                    "metrics": {"score": score, "grade": grade},
+                    "citations": citations,
+                })
+            except Exception:
+                pass
+            return basic
     
     def _get_basic_analysis(self, annotation_results: Dict[str, Any]) -> Dict[str, Any]:
         """当 AI 分析失败时的基础分析"""

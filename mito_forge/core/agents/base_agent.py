@@ -4,6 +4,7 @@ Agent 基类定义
 """
 import abc
 import uuid
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
 
@@ -31,6 +32,63 @@ def _get_model_provider():
 
 logger = get_logger(__name__)
 
+# RAG 共享单例（延迟创建）
+_SHARED_CHROMA = None
+
+class HashEmbeddingFunction:
+    """
+    轻量级本地哈希嵌入器（完全离线）：
+    - 字符 n-gram (2..4)，固定维度 2048
+    - 采用 SHA1 对 n-gram 映射到桶，TF 计数后做 L2 归一化
+    - 兼容 Chroma 1.1.x：提供 __call__/embed_documents/embed_query/name/is_legacy
+    """
+    def __init__(self, n_features: int = 2048, ngram_min: int = 2, ngram_max: int = 4):
+        self.n_features = int(n_features)
+        self.ngram_min = int(ngram_min)
+        self.ngram_max = int(ngram_max)
+
+    def name(self):
+        return "local-hash"
+
+    def is_legacy(self):
+        return True
+
+    def _vectorize_one(self, text: str):
+        import math, hashlib
+        vec = [0.0] * self.n_features
+        if not text:
+            return vec
+        t = text.replace("\n", " ").replace("\r", " ")
+        n = len(t)
+        for ngram_len in range(self.ngram_min, self.ngram_max + 1):
+            if ngram_len <= 0 or ngram_len > n:
+                continue
+            for i in range(0, n - ngram_len + 1):
+                g = t[i:i+ngram_len]
+                h = hashlib.sha1(g.encode("utf-8")).digest()
+                idx = int.from_bytes(h[:8], "big") % self.n_features
+                vec[idx] += 1.0
+        s = math.sqrt(sum(v*v for v in vec))
+        if s > 0:
+            vec = [v / s for v in vec]
+        return vec
+
+    def _vectorize(self, texts):
+        if not texts:
+            return []
+        return [self._vectorize_one(x or "") for x in texts]
+
+    def __call__(self, input):
+        return self._vectorize(input)
+
+    def embed_documents(self, input):
+        return self._vectorize(input)
+
+    def embed_query(self, input):
+        if isinstance(input, str):
+            return self._vectorize([input])
+        return self._vectorize(input)
+
 class BaseAgent(abc.ABC):
     """
     Agent 基类 - 定义统一的生命周期和接口
@@ -45,6 +103,12 @@ class BaseAgent(abc.ABC):
     def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
         self.name = name
         self.config = config or {}
+        # RAG/Mem0 默认开启与默认参数
+        self.config.setdefault("enable_rag", True)
+        self.config.setdefault("rag_top_k", 4)
+        self.config.setdefault("enable_memory", True)
+        # 每个 Agent 独立的 Mem0 客户端缓存
+        self._mem0 = None
         self.status = AgentStatus.IDLE
         self.current_task: Optional[TaskSpec] = None
         self.metrics = AgentMetrics()
@@ -74,7 +138,54 @@ class BaseAgent(abc.ABC):
                 payload=payload
             )
             self.event_callback(event)
+            # Mem0 记忆集成（可选）
+            try:
+                if self.config.get("enable_memory"):
+                    self.memory_write({
+                        "event_type": event_type,
+                        "agent_name": self.name,
+                        "task_id": self.current_task.task_id,
+                        "tags": [self.name, event_type],
+                        "payload": payload,
+                    })
+            except Exception:
+                # 记忆不可用时静默跳过
+                pass
     
+    def run_tool(self, exe: str, args, cwd: Path, env: Optional[dict] = None, timeout: Optional[int] = None) -> dict:
+        """
+        通用外部工具执行器：
+        - 先用 shutil.which 检查可执行是否存在（允许 exe 为 'spades.py'/'spades' 等）
+        - 使用 subprocess.run 执行（shell=False），将 stdout/stderr 写入工作目录日志文件
+        - 返回一个 dict: {exit_code, stdout_path, stderr_path, elapsed_sec}
+        """
+        import shutil, subprocess, time
+        resolved = shutil.which(exe) or shutil.which(exe.split("/")[-1]) or shutil.which(exe.split("\\")[-1])
+        if resolved is None:
+            return {"exit_code": 127, "stdout_path": "", "stderr_path": "", "elapsed_sec": 0.0}
+
+        dry_run = bool(self.config.get("dry_run") or os.getenv("MITO_DRY_RUN"))
+        stdout_path = Path(cwd) / f"{Path(exe).name}.stdout.log"
+        stderr_path = Path(cwd) / f"{Path(exe).name}.stderr.log"
+        if dry_run:
+            # 不实际执行，直接返回成功
+            try:
+                stdout_path.write_text("DRY RUN\\n")
+                stderr_path.write_text("")
+            except Exception:
+                pass
+            return {"exit_code": 0, "stdout_path": str(stdout_path), "stderr_path": str(stderr_path), "elapsed_sec": 0.0}
+
+        cmd = [resolved] + list(args)
+        env_all = os.environ.copy()
+        if env:
+            env_all.update(env)
+        start = time.time()
+        with open(stdout_path, "w", encoding="utf-8") as out, open(stderr_path, "w", encoding="utf-8") as err:
+            proc = subprocess.run(cmd, cwd=str(cwd), env=env_all, stdout=out, stderr=err, timeout=timeout or self.config.get("tool_timeout"))
+        elapsed = time.time() - start
+        return {"exit_code": proc.returncode, "stdout_path": str(stdout_path), "stderr_path": str(stderr_path), "elapsed_sec": elapsed}
+
     def execute_task(self, task: TaskSpec) -> StageResult:
         """
         执行完整任务流程 - 外部调用的主入口
@@ -272,6 +383,13 @@ class BaseAgent(abc.ABC):
     ) -> str:
         """
         生成 LLM 文本响应的便捷方法
+        # RAG 集成（可选）
+        try:
+            if self.config.get("enable_rag"):
+                prompt, _ = self.rag_augment(prompt, task=self.current_task, top_k=int(self.config.get("rag_top_k", 4)))
+        except Exception:
+            # RAG 不可用时静默跳过
+            pass
         
         Args:
             prompt: 用户提示词
@@ -312,6 +430,12 @@ class BaseAgent(abc.ABC):
     ) -> Dict[str, Any]:
         """
         生成结构化 JSON 响应的便捷方法
+        # RAG 集成（可选）
+        try:
+            if self.config.get("enable_rag"):
+                prompt, _ = self.rag_augment(prompt, task=self.current_task, top_k=int(self.config.get("rag_top_k", 4)))
+        except Exception:
+            pass
         
         Args:
             prompt: 用户提示词
@@ -358,3 +482,118 @@ class BaseAgent(abc.ABC):
             return provider.get_model_info()
         except Exception as e:
             return {"error": str(e), "available": False}
+    
+    # ========== RAG 与记忆钩子（默认自动探测，可用即启用） ==========
+    def _get_shared_chroma(self):
+        """
+        获取共享的 Chroma 客户端与集合。创建失败时返回 None。
+        """
+        global _SHARED_CHROMA
+        if _SHARED_CHROMA is not None:
+            return _SHARED_CHROMA
+        try:
+            from pathlib import Path as _P
+            import chromadb
+            base = _P("work") / "chroma"
+            base.mkdir(parents=True, exist_ok=True)
+            client = chromadb.PersistentClient(path=str(base))
+            # 仅使用本地 Hash 嵌入（默认离线、零依赖）
+            emb = HashEmbeddingFunction()
+
+            collection = client.get_or_create_collection(
+                name="knowledge",
+                metadata={"hnsw:space": "cosine"},
+                embedding_function=emb,
+            )
+            _SHARED_CHROMA = {"client": client, "collection": collection}
+            return _SHARED_CHROMA
+        except Exception:
+            return None
+
+    def _get_mem0(self):
+        """
+        获取（并缓存）当前 Agent 独立的 Mem0 客户端。失败时返回 None。
+        """
+        if getattr(self, "_mem0", None) is not None:
+            return self._mem0
+        try:
+            from mem0 import Mem0
+            self._mem0 = Mem0()
+            return self._mem0
+        except Exception:
+            self._mem0 = None
+            return None
+    def rag_augment(self, prompt: str, task: Optional[TaskSpec] = None, top_k: int = 4) -> (str, List[Dict[str, Any]]):
+        """
+        使用 Chroma 进行检索增强，返回增强后的提示与引用条目。
+        如不可用则返回原始提示与空列表。
+        """
+        # 支持通过环境变量模拟 RAG 返回，便于无依赖快速联调
+        try:
+            flag = (os.getenv("MITO_RAG_SIMULATE") or "").strip().lower()
+            if flag in {"1", "true", "yes", "on"}:
+                simulated_citations: List[Dict[str, Any]] = [
+                    {"title": "模拟知识库条目：Assembly Best Practices", "source": "sim://kb/assembly_best_practices", "score": 0.99},
+                    {"title": "模拟知识库条目：QC Parameters", "source": "sim://kb/qc_parameters", "score": 0.97},
+                ]
+                augmented = (
+                    f"{prompt}"
+                    + "\n参考资料（模拟）："
+                    + "\n- " + simulated_citations[0]["title"]
+                    + "\n- " + simulated_citations[1]["title"]
+                )
+                return augmented, simulated_citations
+        except Exception:
+            # 若环境读取异常，继续正常路径
+            pass
+        try:
+            shared = self._get_shared_chroma()
+            if not shared or "collection" not in shared or shared["collection"] is None:
+                return prompt, []
+            collection = shared["collection"]
+            query_text = prompt
+            res = collection.query(query_texts=[query_text], n_results=top_k)
+            citations: List[Dict[str, Any]] = []
+            docs = res.get("documents", [[]])[0]
+            metas = res.get("metadatas", [[]])[0]
+            for i, doc in enumerate(docs):
+                meta = metas[i] if i < len(metas) else {}
+                citations.append({
+                    "title": meta.get("title") or meta.get("id") or f"doc_{i}",
+                    "source": meta.get("source") or "",
+                    "snippet": (doc or "")[:320],})
+            if citations:
+                lines = ["参考资料:"]
+                lines += [f"- {c['title']}: {c['snippet']}" for c in citations]
+                augmented = prompt + "\n" + "\n".join(lines)
+                return augmented, citations
+            return prompt, []
+        except Exception:
+            return prompt, []
+    
+    def memory_query(self, tags: List[str], top_k: int = 3) -> List[Dict[str, Any]]:
+        """
+        查询 Mem0 记忆（短期上下文）。不可用时返回空列表。
+        每个 Agent 保持独立的 Mem0 实例。
+        """
+        try:
+            mem = self._get_mem0()
+            if mem is None:
+                return []
+            items = mem.query({"tags": tags}, top_k=top_k)
+            return items or []
+        except Exception:
+            return []
+    
+    def memory_write(self, event: Dict[str, Any]) -> None:
+        """
+        写入 Mem0 记忆（长期存储）。不可用时静默跳过。
+        每个 Agent 保持独立的 Mem0 实例。
+        """
+        try:
+            mem = self._get_mem0()
+            if mem is None:
+                return
+            mem.write(event)
+        except Exception:
+            pass

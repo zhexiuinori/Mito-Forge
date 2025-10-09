@@ -2,7 +2,9 @@
 Mito-Forge CLI 主入口 (LangGraph Edition)
 """
 import click
+from .commands.doctor import doctor
 from pathlib import Path
+import os
 from .commands.pipeline import pipeline, status
 from .commands.doctor import doctor
 from .commands.config import config
@@ -12,11 +14,41 @@ from .commands.qc import qc
 from .commands.assembly import assembly
 from .commands.annotate import annotate
 
-@click.group()
+class MitoGroup(click.Group):
+    """自定义分组：默认仅显示核心命令；--expert 时显示全部命令"""
+    core_commands = {"pipeline", "status", "doctor", "menu", "run"}
+
+    def list_commands(self, ctx):
+        # 使用父类提供的顺序（已按添加顺序）
+        names = super().list_commands(ctx)
+        # 如果带 --expert，则显示全部（从多渠道判断，避免帮助阶段获取不到参数）
+        expert_on = False
+        if ctx:
+            if getattr(ctx, "params", None) and ctx.params.get("expert"):
+                expert_on = True
+            elif getattr(ctx, "obj", None) and ctx.obj.get("expert"):
+                expert_on = True
+        if not expert_on and os.environ.get("MITO_EXPERT") == "1":
+            expert_on = True
+        if expert_on:
+            return names
+        # 默认仅显示核心命令
+        return [n for n in names if n in self.core_commands]
+
+def _expert_cb(ctx, param, value):
+    # 早期回调，确保在帮助渲染前就记录 expert 状态
+    if value:
+        os.environ["MITO_EXPERT"] = "1"
+        ctx.ensure_object(dict)
+        ctx.obj["expert"] = True
+    return value
+
+@click.group(cls=MitoGroup)
 @click.version_option(version="0.2.0", prog_name="mito-forge")
 @click.option("--lang", type=click.Choice(["zh","en"]), default="zh", help="输出语言")
+@click.option("--expert", is_flag=True, is_eager=True, expose_value=True, callback=_expert_cb, help="显示高级命令")
 @click.pass_context
-def cli(ctx, lang):
+def cli(ctx, lang, expert):
     """
     🧬 Mito-Forge: 基于 LangGraph 的智能线粒体基因组组装工具
     
@@ -120,12 +152,17 @@ def _menu(ctx):
         choice = click.prompt(t["choose"], type=int, default=1)
 
         if choice == 1:
-            # 运行流水线：最小参数引导；更复杂参数可后续扩展
+            # 运行流水线：最小参数引导；可选“工具选择”
             reads = click.prompt(t["prompt_reads"], default="test.fastq")
             output = click.prompt(t["prompt_output"], default="user_analysis_results")
             kingdom = click.prompt(t["prompt_kingdom"], default="animal")
             interactive = click.confirm(t["prompt_interactive"], default=True)
             threads = click.prompt(t["prompt_threads"], type=int, default=8)
+
+            # 是否选择工具（保持菜单简单，不影响不选择的用户）
+            choose_tools = click.confirm(("是否选择工具?" if lang != "en" else "Choose tools?"), default=False)
+
+            # 统一 kwargs，后面根据是否选择工具再补充
             kwargs = {
                 "reads": reads,
                 "output": output,
@@ -137,6 +174,78 @@ def _menu(ctx):
                 "config_file": None,
                 "interactive": interactive,
             }
+
+            if choose_tools:
+                # 选择测序类型与组装器（按 seq-type/kingdom 动态过滤常用集合，覆盖你的清单）
+                seqtype = click.prompt(("测序类型 (auto/illumina/ont/pacbio-hifi/pacbio-clr/hybrid)" if lang != "en" else "Seq type (auto/illumina/ont/pacbio-hifi/pacbio-clr/hybrid)"), default="auto").strip().lower()
+                kg_norm = (kingdom or "animal").strip().lower()
+
+                if seqtype in ("illumina", "auto"):
+                    asm_list = [
+                        "GetOrganelle", "NOVOPlasty", "MitoZ", "MITObim", "MToolBox",
+                        "mitoMaker", "ARC", "IDBA-UD", "Velvet", "SPAdes", "MEANGS"
+                    ]
+                    # 植物专用补充
+                    if kg_norm == "plant":
+                        asm_list += ["SOAPdenovo2", "GSAT"]
+                    # 真菌补充
+                    if kg_norm == "fungi":
+                        asm_list = ["Norgal", "SPAdes", "NOVOPlasty", "MITObim"] + [x for x in asm_list if x not in {"Norgal","SPAdes","NOVOPlasty","MITObim"}]
+                    qc_list = ["fastqc"]
+
+                elif seqtype == "ont":
+                    asm_list = ["Flye", "Canu", "Raven", "Shasta", "wtdbg2", "Miniasm+Minipolish"]
+                    if kg_norm == "plant":
+                        asm_list += ["SMARTdenovo", "NextDenovo", "PLCL", "Oatk", "POLAP"]
+                    qc_list = ["NanoPlot"]
+
+                elif seqtype == "pacbio-hifi":
+                    asm_list = ["Hifiasm", "Flye", "Peregrine"]
+                    if kg_norm == "animal":
+                        asm_list = ["MitoHiFi"] + asm_list
+                    if kg_norm == "plant":
+                        asm_list = ["PMAT"] + asm_list
+                    qc_list = ["basic_stats"]
+
+                elif seqtype == "pacbio-clr":
+                    asm_list = ["Canu", "Flye", "wtdbg2", "Miniasm+Minipolish"]
+                    qc_list = ["basic_stats"]
+
+                elif seqtype == "hybrid":
+                    asm_list = ["Unicycler", "SPAdes", "Flye", "MaSuRCA"]
+                    qc_list = ["fastqc", "NanoPlot"]
+
+                else:
+                    asm_list = ["SPAdes"]
+                    qc_list = ["fastqc"]
+
+                click.echo(("可选组装器: " if lang != "en" else "Assemblers: ") + ", ".join(asm_list))
+                assembler = click.prompt(("选择组装器" if lang != "en" else "Choose assembler"), default=asm_list[0])
+
+                click.echo(("可选QC: " if lang != "en" else "QC options: ") + ", ".join(qc_list))
+                qc_choice = click.prompt(("选择QC(可选，留空跳过)" if lang != "en" else "Choose QC (optional, leave empty to skip)"), default="", show_default=False).strip()
+
+                # 生成工具计划文件到输出目录
+                try:
+                    import json as _json
+                    plan_path = Path(output) / "tool_plan.json"
+                    plan = {"tool_plan": {"assembler": {"name": assembler}}}
+                    if qc_choice:
+                        plan["tool_plan"]["qc"] = [qc_choice]
+                    plan_path.parent.mkdir(parents=True, exist_ok=True)
+                    plan_path.write_text(_json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+
+                    # 使用配置文件运行，并传递测序类型
+                    kwargs["config_file"] = str(plan_path)
+                    kwargs["seq_type"] = seqtype
+
+                    # 明确反馈选择结果与配置文件位置
+                    click.echo(("✅ 已选择工具: " if lang != "en" else "✅ Selected tools: ") + f"assembler={assembler}" + (f", qc={qc_choice}" if qc_choice else ""))
+                    click.echo(("📄 工具计划文件: " if lang != "en" else "📄 Tool plan file: ") + f"{plan_path}")
+                except Exception as _e:
+                    # 写文件失败时，仍按不选择工具的方式运行
+                    click.echo(("⚠️ 写入工具计划失败，将按默认工具运行: " if lang != "en" else "⚠️ Failed to write tool plan, running with defaults: ") + f"{_e}")
+
             ctx.invoke(pipeline, **kwargs)
         elif choice == 2:
             # 智能体管理
@@ -158,6 +267,8 @@ def _menu(ctx):
             break
         else:
             click.echo(t["invalid"])
+
+main = cli
 
 if __name__ == "__main__":
     cli()

@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.console import Console
 
 from ...core.agents.assembly_agent import AssemblyAgent
+from ...core.agents.types import TaskSpec
 from ...utils.config import Config
 from ...utils.exceptions import MitoForgeError
 
@@ -48,10 +49,14 @@ def _t(key):
 from ...utils.i18n import t as _t
 
 def _help(key):
-    import sys, os as _os
-    lang = "en" if ("--lang" in sys.argv and "en" in sys.argv) else _os.getenv("MITO_LANG", "zh")
-    from ...utils.i18n import t as _tt
-    return _tt(key, lang)
+    # 健壮回退：解析语言与翻译若失败，直接返回原始键
+    try:
+        import sys, os as _os
+        lang = "en" if ("--lang" in sys.argv and "en" in sys.argv) else _os.getenv("MITO_LANG", "zh")
+        from ...utils.i18n import t as _tt
+        return _tt(key, lang)
+    except Exception:
+        return key
 
 @click.command(help=_help("asm.help.desc"))
 @click.argument('input_files', nargs=-1, required=True, type=click.Path(exists=True))
@@ -154,20 +159,37 @@ def assembly(ctx, input_files, output_dir, assembler, threads, memory, k_values,
         
         # 执行组装
         with console.status(f"[bold green]{_t('asm_running')}") if not quiet else console:
-            results = assembly_agent.assemble(
-                input_files=list(input_files),
-                output_dir=str(output_path)
+            task = TaskSpec(
+                task_id="assembly_cli",
+                agent_type="assembly",
+                inputs={"reads": str(list(input_files)[0]), "assembler": assembler},
+                config={
+                    "threads": threads,
+                    "memory": memory,
+                    "k_values": [int(k) for k in k_values.split(',')],
+                    "careful_mode": careful_mode,
+                    "verbose": verbose
+                },
+                workdir=str(output_path)
             )
+            stage_result = assembly_agent.execute_task(task)
+            # 失败处理：若 Agent 返回失败，退出码为 1（兼容枚举/字符串）
+            status_raw = getattr(stage_result, "status", None)
+            status_name = (getattr(status_raw, "name", status_raw) or "").lower()
+            success = getattr(stage_result, "success", True)
+            if (status_name in {"failed", "error"}) or (success is False):
+                raise SystemExit(1)
         
         # 显示结果
         if not quiet:
             console.print(f"✅ [bold green]{_t('asm_done')}[/bold green]\n")
             console.print(f"📊 {_t('asm_stats')}:")
-            console.print(f"  • Contigs数量: {results.get('num_contigs', 'N/A')}")
-            console.print(f"  • 总长度: {results.get('total_length', 'N/A')} bp")
-            console.print(f"  • N50: {results.get('n50', 'N/A')} bp")
-            console.print(f"  • 最长contig: {results.get('longest_contig', 'N/A')} bp")
-            console.print(f"\n📄 {_t('asm_file')}: [link]{output_path}/contigs.fasta[/link]")
+            assembly_data = getattr(stage_result, "outputs", {}).get('assembly_results', {})
+            console.print(f"  • Contigs数量: {assembly_data.get('num_contigs', 'N/A')}")
+            console.print(f"  • 总长度: {assembly_data.get('total_length', 'N/A')} bp")
+            console.print(f"  • N50: {assembly_data.get('n50', 'N/A')} bp")
+            console.print(f"  • 最长contig: {assembly_data.get('max_length', 'N/A')} bp")
+            console.print(f"\n📄 {_t('asm_file')}: [link]{assembly_data.get('assembly_file', str(output_path / 'contigs.fasta'))}[/link]")
         
         return 0
         

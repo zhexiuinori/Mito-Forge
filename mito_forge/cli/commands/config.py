@@ -67,6 +67,7 @@ def _t(key):
 
 from ...utils.i18n import t as _t
 @click.command()
+@click.argument('action', required=False)
 @click.option('--show', is_flag=True, help=_help('cfg_opt_show'))
 @click.option('--set', 'set_config', nargs=2, multiple=True, 
               metavar='KEY VALUE', help=_help('cfg_opt_set'))
@@ -74,7 +75,7 @@ from ...utils.i18n import t as _t
 @click.option('--config-file', type=click.Path(), 
               help=_help('cfg_opt_config_file'))
 @click.pass_context
-def config(ctx, show, set_config, reset, config_file):
+def config(ctx, action, show, set_config, reset, config_file):
     """
     配置管理 / Configuration management
 
@@ -88,6 +89,9 @@ def config(ctx, show, set_config, reset, config_file):
     """
     verbose = ctx.obj.get('verbose', False)
     quiet = ctx.obj.get('quiet', False)
+    # 兼容 'config show' 位置参数用法
+    if action and str(action).lower() == 'show':
+        show = True
     
     try:
         # 加载配置
