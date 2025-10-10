@@ -111,16 +111,9 @@ def print_report(result: dict) -> None:
     show_default=True,
     help="Comma-separated external tools to check",
 )
-@click.option(
-    "--fix",
-    is_flag=True,
-    default=False,
-    help="Install missing tools into project-local mito_forge/tools using sources.json"
-)
-def doctor(tools: str, fix: bool):
+def doctor(tools: str):
     """
     检查外部依赖工具是否可用，并给出缺失的安装建议。
-    使用 --fix 可按 mito_forge/tools/sources.json 一键安装缺失工具。
     """
     tool_list = [t.strip() for t in tools.split(",") if t.strip()]
     result = check_tools(tool_list)
@@ -139,17 +132,6 @@ def doctor(tools: str, fix: bool):
             detail = result["detail"].get(m, {})
             if not detail.get("found"):
                 click.echo(f"- {m}: {detail.get('suggest', 'see bioconda')}")
-        if fix:
-            # 一键安装缺失工具（基于 tools/sources.json）
-            try:
-                from ...utils.tools_manager import ToolsManager
-                tm = ToolsManager(project_root=Path.cwd())
-                for m in missing:
-                    click.echo(f"Installing {m} ...")
-                    path = tm.install(m)
-                    click.echo(f"Installed: {path}")
-            except Exception as e:
-                click.echo(f"Fix failed: {e}")
     else:
         click.echo("Missing/缺失: None")
 

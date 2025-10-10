@@ -162,17 +162,6 @@ class BaseAgent(abc.ABC):
         import shutil, subprocess, time
         resolved = shutil.which(exe) or shutil.which(exe.split("/")[-1]) or shutil.which(exe.split("\\")[-1])
         if resolved is None:
-            # Fallback: search in project's tools/bin via ToolsManager
-            try:
-                from ...utils.tools_manager import ToolsManager
-                tm = ToolsManager(project_root=Path.cwd())
-                tool_name = Path(exe).stem
-                p = tm.where(tool_name)
-                if p:
-                    resolved = str(p)
-            except Exception:
-                resolved = None
-        if resolved is None:
             return {"exit_code": 127, "stdout_path": "", "stderr_path": "", "elapsed_sec": 0.0}
 
         dry_run = bool(self.config.get("dry_run") or os.getenv("MITO_DRY_RUN"))
