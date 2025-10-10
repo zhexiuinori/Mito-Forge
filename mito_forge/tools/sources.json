@@ -1,0 +1,17 @@
+{
+  "pmat2": {
+    "repo": "github",
+    "version": "v2.1.5",
+    "assets": {
+      "win": {
+        "url": "https://codeload.github.com/aiPGAB/PMAT2/zip/refs/tags/v2.1.5"
+      },
+      "linux": {
+        "url": "https://codeload.github.com/aiPGAB/PMAT2/tar.gz/refs/tags/v2.1.5"
+      },
+      "mac": {
+        "url": "https://codeload.github.com/aiPGAB/PMAT2/tar.gz/refs/tags/v2.1.5"
+      }
+    }
+  }
+}
