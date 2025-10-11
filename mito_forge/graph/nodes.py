@@ -338,44 +338,9 @@ def qc_node(state: PipelineState) -> PipelineState:
     except Exception as e:
         logger.error(f"QC failed: {e}")
         fail_stage(state, "qc", str(e))
-        
-        # === 智能错误恢复：调用 Supervisor 诊断 ===
-        retry_count = state["retries"].get("qc", 0)
-        if retry_count < 2 and SupervisorAgent is not None:
-            try:
-                supervisor = SupervisorAgent(config)
-                log_path = Path(state["workdir"]).parent / "logs" / "pipeline.log"
-                
-                if log_path.exists():
-                    logger.info("🔍 Calling Supervisor to analyze QC error...")
-                    
-                    # AI 诊断错误
-                    diagnosis = supervisor.analyze_error_from_log(log_path, "qc")
-                    
-                    # 生成恢复策略
-                    current_strategy = state["config"].get("selected_strategy", {})
-                    recovery_strategy = supervisor.generate_recovery_strategy(
-                        diagnosis,
-                        current_strategy,
-                        retry_count
-                    )
-                    
-                    if recovery_strategy:
-                        # 应用新策略
-                        state["config"]["selected_strategy"] = recovery_strategy
-                        if "tools" in recovery_strategy and "qc" in recovery_strategy["tools"]:
-                            state["config"]["tool_chain"]["qc"] = recovery_strategy["tools"]["qc"]
-                        
-                        logger.info("✓ Supervisor provided recovery strategy, will retry")
-                        state["route"] = "retry"
-                        return state
-                    else:
-                        logger.warning("Supervisor could not generate recovery strategy")
-            except Exception as diag_error:
-                logger.warning(f"Supervisor diagnosis failed: {diag_error}, falling back to simple retry")
-        
-        # 原有的简单重试逻辑作为备选
-        state["route"] = "retry" if retry_count < 2 else "terminate"
+        # QC Agent 内部已经处理了错误（包括重试和修复）
+        # 如果到这里说明确实无法修复，直接终止
+        state["route"] = "terminate"
         return state
 
 def assembly_node(state: PipelineState) -> PipelineState:
@@ -535,55 +500,9 @@ def assembly_node(state: PipelineState) -> PipelineState:
     except Exception as e:
         logger.error(f"Assembly failed: {e}")
         fail_stage(state, "assembly", str(e))
-        
-        # === 智能错误恢复：调用 Supervisor 诊断 ===
-        retry_count = state["retries"].get("assembly", 0)
-        if retry_count < 2 and SupervisorAgent is not None:
-            try:
-                supervisor = SupervisorAgent(config)
-                log_path = Path(state["workdir"]).parent / "logs" / "pipeline.log"
-                
-                if log_path.exists():
-                    logger.info("🔍 Calling Supervisor to analyze Assembly error...")
-                    
-                    # AI 诊断错误
-                    diagnosis = supervisor.analyze_error_from_log(log_path, "assembly")
-                    
-                    # 生成恢复策略
-                    current_strategy = state["config"].get("selected_strategy", {})
-                    recovery_strategy = supervisor.generate_recovery_strategy(
-                        diagnosis,
-                        current_strategy,
-                        retry_count
-                    )
-                    
-                    if recovery_strategy:
-                        # 应用新策略
-                        state["config"]["selected_strategy"] = recovery_strategy
-                        if "tools" in recovery_strategy and "assembly" in recovery_strategy["tools"]:
-                            state["config"]["tool_chain"]["assembly"] = recovery_strategy["tools"]["assembly"]
-                        
-                        logger.info("✓ Supervisor provided recovery strategy, will retry")
-                        state["route"] = "retry"
-                        return state
-                    else:
-                        logger.warning("Supervisor could not generate recovery strategy")
-            except Exception as diag_error:
-                logger.warning(f"Supervisor diagnosis failed: {diag_error}, falling back to original retry logic")
-        
-        # 原有的重试和 fallback 逻辑作为备选
-        if retry_count < 2:
-            state["route"] = "retry"
-        else:
-            # 尝试备用工具
-            fallback_tool = _get_fallback_assembler(config["tool_chain"]["assembly"])
-            if fallback_tool:
-                config["tool_chain"]["assembly"] = fallback_tool
-                state["route"] = "fallback"
-                logger.info(f"Falling back to {fallback_tool}")
-            else:
-                state["route"] = "terminate"
-        
+        # Assembly Agent 内部已经处理了错误（包括重试和修复）
+        # 如果到这里说明确实无法修复，直接终止
+        state["route"] = "terminate"
         return state
 
 def annotation_node(state: PipelineState) -> PipelineState:
@@ -696,44 +615,9 @@ def annotation_node(state: PipelineState) -> PipelineState:
     except Exception as e:
         logger.error(f"Annotation failed: {e}")
         fail_stage(state, "annotation", str(e))
-        
-        # === 智能错误恢复：调用 Supervisor 诊断 ===
-        retry_count = state["retries"].get("annotation", 0)
-        if retry_count < 2 and SupervisorAgent is not None:
-            try:
-                supervisor = SupervisorAgent(config)
-                log_path = Path(state["workdir"]).parent / "logs" / "pipeline.log"
-                
-                if log_path.exists():
-                    logger.info("🔍 Calling Supervisor to analyze Annotation error...")
-                    
-                    # AI 诊断错误
-                    diagnosis = supervisor.analyze_error_from_log(log_path, "annotation")
-                    
-                    # 生成恢复策略
-                    current_strategy = state["config"].get("selected_strategy", {})
-                    recovery_strategy = supervisor.generate_recovery_strategy(
-                        diagnosis,
-                        current_strategy,
-                        retry_count
-                    )
-                    
-                    if recovery_strategy:
-                        # 应用新策略
-                        state["config"]["selected_strategy"] = recovery_strategy
-                        if "tools" in recovery_strategy and "annotation" in recovery_strategy["tools"]:
-                            state["config"]["tool_chain"]["annotation"] = recovery_strategy["tools"]["annotation"]
-                        
-                        logger.info("✓ Supervisor provided recovery strategy, will retry")
-                        state["route"] = "retry"
-                        return state
-                    else:
-                        logger.warning("Supervisor could not generate recovery strategy")
-            except Exception as diag_error:
-                logger.warning(f"Supervisor diagnosis failed: {diag_error}, falling back to simple retry")
-        
-        # 原有的简单重试逻辑作为备选（注释失败可以继续）
-        state["route"] = "retry" if retry_count < 2 else "continue"
+        # Annotation Agent 内部已经处理了错误（包括重试和修复）
+        # 如果到这里说明确实无法修复，注释失败可以继续报告阶段
+        state["route"] = "continue"
         return state
 
 def report_node(state: PipelineState) -> PipelineState:
