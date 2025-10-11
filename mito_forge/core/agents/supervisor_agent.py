@@ -427,3 +427,247 @@ class SupervisorAgent(BaseAgent):
             "reasoning": "Default rule-based strategy used as fallback when AI model is unavailable",
             "confidence": 0.6
         }
+    
+    def analyze_error_from_log(self, log_path: Path, failed_stage: str) -> Dict[str, Any]:
+        """
+        从 pipeline.log 分析错误
+        
+        Args:
+            log_path: pipeline.log 路径
+            failed_stage: 失败的阶段（qc/assembly/annotation）
+        
+        Returns:
+            错误诊断和修复建议
+        """
+        try:
+            # 读取日志文件
+            if not log_path.exists():
+                logger.warning(f"Log file not found: {log_path}")
+                return self._get_default_diagnosis(failed_stage)
+            
+            log_content = log_path.read_text(encoding='utf-8')
+            
+            # 提取最近的错误日志（最后 2000 字符）
+            recent_log = log_content[-2000:] if len(log_content) > 2000 else log_content
+            
+            # 构建诊断提示词
+            diagnosis_prompt = f"""分析以下 {failed_stage} 阶段的错误日志：
+
+```
+{recent_log}
+```
+
+请深入诊断：
+
+1. **错误类型**（选择一个）：
+   - tool_not_found: 工具未安装或不可用
+   - parameter_error: 参数配置错误
+   - input_quality: 输入数据质量问题
+   - resource_limit: 系统资源不足（内存/磁盘/超时）
+   - tool_bug: 工具本身的 bug 或版本问题
+   - data_format: 数据格式不兼容
+   - unknown: 无法确定
+
+2. **根本原因**：简洁准确地说明问题所在
+
+3. **是否可以重试**：基于错误类型判断
+
+4. **推荐的修复动作**（选择一个）：
+   - retry: 简单重试
+   - switch_tool: 切换到其他工具
+   - adjust_params: 调整参数后重试
+   - abort: 无法自动修复，需要人工干预
+
+5. **具体建议**：
+   - 如果推荐切换工具，说明推荐哪个工具及原因
+   - 如果推荐调整参数，给出具体参数名和值
+   - 解释为什么这样做能解决问题
+
+请严格按照以下 JSON 格式输出：
+{{
+  "error_type": "类型",
+  "root_cause": "根本原因的简洁描述",
+  "can_retry": true 或 false,
+  "recommended_action": "retry/switch_tool/adjust_params/abort",
+  "suggestions": {{
+    "alternative_tool": "工具名或null",
+    "parameter_adjustments": {{"参数名": "参数值"}},
+    "explanation": "为什么这样做能解决问题"
+  }}
+}}"""
+            
+            # 调用 LLM 进行诊断
+            logger.info(f"Supervisor analyzing error for {failed_stage} stage...")
+            
+            schema = {
+                "type": "object",
+                "properties": {
+                    "error_type": {"type": "string"},
+                    "root_cause": {"type": "string"},
+                    "can_retry": {"type": "boolean"},
+                    "recommended_action": {"type": "string"},
+                    "suggestions": {
+                        "type": "object",
+                        "properties": {
+                            "alternative_tool": {"type": ["string", "null"]},
+                            "parameter_adjustments": {"type": "object"},
+                            "explanation": {"type": "string"}
+                        }
+                    }
+                },
+                "required": ["error_type", "root_cause", "can_retry", "recommended_action"]
+            }
+            
+            diagnosis = self.call_llm(
+                diagnosis_prompt,
+                schema=schema,
+                temperature=0.3  # 降低温度以获得更确定的诊断
+            )
+            
+            logger.info(
+                f"✓ Error diagnosis complete: {diagnosis['error_type']} - "
+                f"{diagnosis['root_cause']}"
+            )
+            
+            return diagnosis
+            
+        except Exception as e:
+            logger.warning(f"Error diagnosis failed: {e}, using default diagnosis")
+            return self._get_default_diagnosis(failed_stage)
+    
+    def generate_recovery_strategy(self, 
+                                   diagnosis: Dict[str, Any],
+                                   current_strategy: Dict[str, Any],
+                                   retry_count: int) -> Optional[Dict[str, Any]]:
+        """
+        根据错误诊断生成恢复策略
+        
+        Args:
+            diagnosis: 错误诊断结果（来自 analyze_error_from_log）
+            current_strategy: 当前执行策略
+            retry_count: 当前重试次数
+        
+        Returns:
+            新的执行策略，如果无法恢复则返回 None
+        """
+        try:
+            action = diagnosis["recommended_action"]
+            suggestions = diagnosis.get("suggestions", {})
+            
+            # 无法自动恢复
+            if action == "abort":
+                logger.error(
+                    f"Cannot auto-recover: {diagnosis['root_cause']}"
+                )
+                return None
+            
+            # 超过最大重试次数
+            if retry_count >= 2:
+                logger.warning(
+                    f"Max retries ({retry_count}) reached, cannot retry"
+                )
+                return None
+            
+            # 创建新策略（深拷贝避免修改原策略）
+            new_strategy = json.loads(json.dumps(current_strategy))
+            
+            # 根据诊断建议修改策略
+            if action == "switch_tool":
+                alt_tool = suggestions.get("alternative_tool")
+                if alt_tool:
+                    stage = self._identify_failed_stage(diagnosis, current_strategy)
+                    if stage:
+                        old_tool = new_strategy["tools"].get(stage)
+                        new_strategy["tools"][stage] = alt_tool
+                        
+                        logger.info(
+                            f"🔧 Recovery: Switching {stage} tool from "
+                            f"{old_tool} to {alt_tool}"
+                        )
+                        logger.info(f"   Reason: {suggestions.get('explanation', 'N/A')}")
+                    else:
+                        logger.warning("Cannot identify failed stage for tool switch")
+                        return None
+                else:
+                    logger.warning("No alternative tool suggested")
+                    return None
+            
+            elif action == "adjust_params":
+                params = suggestions.get("parameter_adjustments", {})
+                if params:
+                    # 更新参数
+                    if "parameters" not in new_strategy:
+                        new_strategy["parameters"] = {}
+                    
+                    for key, value in params.items():
+                        new_strategy["parameters"][key] = value
+                    
+                    logger.info(f"🔧 Recovery: Adjusting parameters: {params}")
+                    logger.info(f"   Reason: {suggestions.get('explanation', 'N/A')}")
+                else:
+                    logger.warning("No parameter adjustments suggested")
+                    # 简单重试
+                    logger.info("🔧 Recovery: Retrying with same configuration")
+            
+            elif action == "retry":
+                logger.info("🔧 Recovery: Retrying with same configuration")
+                # 策略不变
+            
+            else:
+                logger.warning(f"Unknown recovery action: {action}")
+                return None
+            
+            return new_strategy
+            
+        except Exception as e:
+            logger.error(f"Failed to generate recovery strategy: {e}")
+            return None
+    
+    def _identify_failed_stage(self, diagnosis: Dict[str, Any],
+                               current_strategy: Dict[str, Any]) -> Optional[str]:
+        """
+        根据错误诊断识别失败的阶段
+        
+        Args:
+            diagnosis: 错误诊断
+            current_strategy: 当前策略
+        
+        Returns:
+            阶段名称（qc/assembly/annotation）或 None
+        """
+        # 从错误信息中推断阶段
+        error_msg = diagnosis.get("root_cause", "").lower()
+        
+        # 关键词匹配
+        if any(word in error_msg for word in ["assembly", "spades", "flye", "contig", "scaffold"]):
+            return "assembly"
+        elif any(word in error_msg for word in ["annotation", "mitos", "gene", "cds", "trna"]):
+            return "annotation"
+        elif any(word in error_msg for word in ["qc", "quality", "fastqc", "trimming"]):
+            return "qc"
+        
+        # 如果无法从错误信息推断，尝试从当前工具推断
+        tools = current_strategy.get("tools", {})
+        error_type = diagnosis.get("error_type", "")
+        
+        if error_type == "tool_not_found":
+            # 检查哪个工具不可用
+            for stage, tool in tools.items():
+                if tool and tool.lower() in error_msg:
+                    return stage
+        
+        return None
+    
+    def _get_default_diagnosis(self, failed_stage: str) -> Dict[str, Any]:
+        """获取默认的错误诊断（当 LLM 不可用时）"""
+        return {
+            "error_type": "unknown",
+            "root_cause": f"{failed_stage} stage failed with unknown error",
+            "can_retry": True,
+            "recommended_action": "retry",
+            "suggestions": {
+                "alternative_tool": None,
+                "parameter_adjustments": {},
+                "explanation": "Simple retry without changes"
+            }
+        }

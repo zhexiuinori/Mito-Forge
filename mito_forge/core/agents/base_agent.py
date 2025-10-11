@@ -608,3 +608,95 @@ class BaseAgent(abc.ABC):
             mem.write(event)
         except Exception:
             pass
+    
+    def auto_adjust_parameters(self, 
+                              error_msg: str, 
+                              current_params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        根据错误信息自动调整工具参数
+        
+        这是一个简单的规则系统，基于常见错误模式自动修复参数。
+        可以被子类覆盖以实现更复杂的调整逻辑。
+        
+        Args:
+            error_msg: 错误消息
+            current_params: 当前参数配置
+        
+        Returns:
+            调整后的参数配置
+        
+        支持的错误类型：
+        - Out of Memory (OOM): 减少线程数和内存使用
+        - Timeout: 增加超时时间
+        - Input Format: 启用严格模式
+        - Disk Space: 启用压缩和清理临时文件
+        """
+        adjusted = current_params.copy()
+        error_lower = error_msg.lower()
+        
+        # 内存不足错误
+        if any(keyword in error_lower for keyword in ["out of memory", "oom", "memory error", "cannot allocate"]):
+            logger.info("🔧 Detected OOM error, adjusting memory-related parameters")
+            
+            # 减少线程数
+            if "threads" in adjusted:
+                old_threads = adjusted["threads"]
+                adjusted["threads"] = max(1, old_threads // 2)
+                logger.info(f"   Reducing threads: {old_threads} → {adjusted['threads']}")
+            
+            # 减少内存参数
+            if "memory" in adjusted:
+                old_mem = adjusted["memory"]
+                adjusted["memory"] = max(1, int(old_mem * 0.6))
+                logger.info(f"   Reducing memory: {old_mem}GB → {adjusted['memory']}GB")
+            
+            # SPAdes 特定参数
+            if "careful" in adjusted:
+                adjusted["careful"] = False
+                logger.info("   Disabling careful mode to save memory")
+        
+        # 超时错误
+        elif any(keyword in error_lower for keyword in ["timeout", "timed out", "time limit"]):
+            logger.info("🔧 Detected timeout error, adjusting time-related parameters")
+            
+            if "timeout" in adjusted:
+                old_timeout = adjusted["timeout"]
+                adjusted["timeout"] = int(old_timeout * 1.5)
+                logger.info(f"   Increasing timeout: {old_timeout}s → {adjusted['timeout']}s")
+            else:
+                adjusted["timeout"] = 3600  # 1 hour default
+                logger.info(f"   Setting timeout: {adjusted['timeout']}s")
+        
+        # 输入格式错误
+        elif any(keyword in error_lower for keyword in ["format", "invalid input", "parse error", "malformed"]):
+            logger.info("🔧 Detected format error, enabling strict input handling")
+            
+            adjusted["careful_mode"] = True
+            adjusted["ignore_errors"] = False
+            logger.info("   Enabling careful mode and strict validation")
+        
+        # 磁盘空间不足
+        elif any(keyword in error_lower for keyword in ["disk", "no space", "storage", "write error"]):
+            logger.info("🔧 Detected disk space error, enabling compression")
+            
+            adjusted["compress"] = True
+            adjusted["keep_intermediate"] = False
+            logger.info("   Enabling compression and removing intermediate files")
+        
+        # K-mer 相关错误（组装工具特定）
+        elif any(keyword in error_lower for keyword in ["kmer", "k-mer", "coverage too low"]):
+            logger.info("🔧 Detected k-mer error, adjusting k-mer size")
+            
+            if "kmer" in adjusted or "k" in adjusted:
+                key = "kmer" if "kmer" in adjusted else "k"
+                old_k = adjusted[key]
+                adjusted[key] = max(21, old_k - 10)  # 减小 k-mer 大小
+                logger.info(f"   Reducing k-mer size: {old_k} → {adjusted[key]}")
+        
+        # 返回调整后的参数
+        if adjusted != current_params:
+            logger.info(f"✓ Parameters adjusted based on error pattern")
+            return adjusted
+        else:
+            logger.debug("No parameter adjustments made")
+            return current_params
