@@ -298,36 +298,12 @@ class AnnotationAgent(BaseAgent):
                         except Exception as e:
                             logger.warning(f"Failed to parse MITOS output: {e}")
         except Exception as _e:
-            logger.warning(f"Annotation external tool execution failed, fallback to mock: {_e}")
-        
-        # 回退：模拟数据
-        mock_results = {
-            "annotator": annotator,
-            "genome_length": 16569,
-            "kingdom": kingdom,
-            "genetic_code": self.genetic_code,
-            "annotation_file": str(self.workdir / "annotations.gff") if self.workdir else "annotations.gff",
-            "total_genes": 37,
-            "protein_genes": 13,
-            "trna_genes": 22,
-            "rrna_genes": 2,
-            "other_genes": 0,
-            "coding_coverage": 68.5,
-            "genome_utilization": 92.3,
-            "avg_gene_length": 1024,
-            "detected_issues": [
-                "tRNA-Ser基因可能存在重叠",
-                "ND6基因长度略短于预期"
-            ]
-        }
-        
-        # 保存注释统计结果
-        if self.workdir:
-            stats_file = self.workdir / "annotation_stats.json"
-            with open(stats_file, 'w', encoding='utf-8') as f:
-                json.dump(mock_results, f, indent=2, ensure_ascii=False)
-        
-        return mock_results
+            logger.error(f"Annotation tool execution failed: {_e}")
+            raise RuntimeError(
+                f"Annotation failed with {annotator}. "
+                f"Please ensure the tool is installed and accessible. "
+                f"Error: {_e}"
+            )
     
     def analyze_annotation_results(self, annotation_results: Dict[str, Any]) -> Dict[str, Any]:
         """使用 AI 分析注释结果"""

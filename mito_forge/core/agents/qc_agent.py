@@ -315,35 +315,12 @@ class QCAgent(BaseAgent):
                     except Exception as e:
                         logger.warning(f"Failed to parse NanoPlot output: {e}")
         except Exception as _e:
-            logger.warning(f"QC external tool execution failed, fallback to mock: {_e}")
-        
-        # 回退：返回模拟数据
-        mock_results = {
-            "filename": Path(reads_file).name,
-            "read_type": read_type,
-            "total_reads": 1000000,
-            "total_bases": 150000000,
-            "avg_length": 150,
-            "avg_quality": 32.5,
-            "q20_percent": 95.2,
-            "q30_percent": 89.7,
-            "gc_content": 42.3,
-            "min_length": 35,
-            "max_length": 151,
-            "n50": 150,
-            "detected_issues": [
-                "轻微的质量下降在读长末端",
-                "检测到少量接头序列"
-            ]
-        }
-        
-        # 保存原始 QC 结果
-        if self.workdir:
-            qc_file = self.workdir / "qc_results.json"
-            with open(qc_file, 'w', encoding='utf-8') as f:
-                json.dump(mock_results, f, indent=2, ensure_ascii=False)
-        
-        return mock_results
+            logger.error(f"QC tool execution failed: {_e}")
+            raise RuntimeError(
+                f"QC analysis failed. "
+                f"Please ensure FastQC/NanoPlot is installed and accessible. "
+                f"Error: {_e}"
+            )
     
     def analyze_qc_results(self, qc_results: Dict[str, Any]) -> Dict[str, Any]:
         """使用 AI 分析 QC 结果"""

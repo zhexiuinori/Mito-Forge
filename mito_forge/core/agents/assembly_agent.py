@@ -363,33 +363,12 @@ class AssemblyAgent(BaseAgent):
                         except Exception as e:
                             logger.warning(f"Failed to parse GetOrganelle output: {e}")
         except Exception as _e:
-            logger.warning(f"Assembly external tool execution failed, fallback to mock: {_e}")
-        
-        # 回退：模拟数据
-        mock_results = {
-            "assembler": assembler,
-            "read_type": read_type,
-            "kingdom": inputs.get("kingdom", "animal"),
-            "assembly_time": 45,
-            "assembly_file": str(self.workdir / "assembly.fasta") if self.workdir else "assembly.fasta",
-            "num_contigs": 3,
-            "total_length": 16569,
-            "max_length": 16569,
-            "n50": 16569,
-            "n90": 16569,
-            "gc_content": 16.5,
-            "coverage": 150.5,
-            "completeness": 98.5,
-            "contamination": 0.2
-        }
-        
-        # 保存组装统计结果
-        if self.workdir:
-            stats_file = self.workdir / "assembly_stats.json"
-            with open(stats_file, 'w', encoding='utf-8') as f:
-                json.dump(mock_results, f, indent=2, ensure_ascii=False)
-        
-        return mock_results
+            logger.error(f"Assembly tool execution failed: {_e}")
+            raise RuntimeError(
+                f"Assembly failed with {assembler}. "
+                f"Please ensure the tool is installed and accessible. "
+                f"Error: {_e}"
+            )
     
     def analyze_assembly_results(self, assembly_results: Dict[str, Any]) -> Dict[str, Any]:
         """使用 AI 分析组装结果"""
