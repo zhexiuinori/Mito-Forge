@@ -47,7 +47,8 @@ StageName = Literal["supervisor", "qc", "assembly", "annotation", "report"]
 
 class InputData(TypedDict):
     """输入数据结构"""
-    reads: Union[str, List[str]]        # 测序数据文件路径
+    reads: Union[str, List[str]]        # 测序数据文件路径（R1 或单端）
+    reads2: Optional[str]               # 第二个测序文件（双端测序 R2）
     read_type: DataType                 # 数据类型
     kingdom: Kingdom                    # 物种类型
     species: Optional[str]              # 物种名称

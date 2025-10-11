@@ -215,61 +215,153 @@ class AssemblyAgent(BaseAgent):
     def run_assembly(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """运行基因组组装"""
         reads_file = inputs["reads"]
+        reads2_file = inputs.get("reads2")  # 双端测序 R2
         read_type = inputs.get("read_type", "illumina")
         assembler = inputs.get("assembler", "spades")
         
-        logger.info(f"Running assembly with {assembler} on {reads_file}")
+        if reads2_file:
+            logger.info(f"Running assembly with {assembler} on paired-end data: {reads_file} + {reads2_file}")
+        else:
+            logger.info(f"Running assembly with {assembler} on {reads_file}")
         # 优先尝试真实工具，失败则回退模拟
         try:
             import shutil
             asm_dir = (self.workdir or Path(".")) / "assembly"
             asm_dir.mkdir(parents=True, exist_ok=True)
             threads = int(self.config.get("threads", 4))
+            
+            # 检查工具是否存在（系统 PATH 或项目本地）
+            def find_tool(tool_name: str) -> str:
+                if shutil.which(tool_name):
+                    return tool_name
+                try:
+                    from ...utils.tools_manager import ToolsManager
+                    tm = ToolsManager(project_root=Path.cwd())
+                    p = tm.where(tool_name)
+                    if p:
+                        return str(p)
+                except Exception:
+                    pass
+                return None
+            
             if assembler.lower() in ("spades", "spades.py"):
-                exe = "spades.py" if shutil.which("spades.py") else ("spades" if shutil.which("spades") else None)
+                exe = find_tool("spades.py") or find_tool("spades")
                 if exe:
-                    args = ["-s", str(reads_file), "-o", str(asm_dir), "-t", str(threads)]
+                    # 判断单端还是双端
+                    if reads2_file:
+                        # 双端模式: -1 R1 -2 R2
+                        args = ["-1", str(reads_file), "-2", str(reads2_file), 
+                                "-o", str(asm_dir), "-t", str(threads)]
+                    else:
+                        # 单端模式: -s reads
+                        args = ["-s", str(reads_file), 
+                                "-o", str(asm_dir), "-t", str(threads)]
                     rc = self.run_tool(exe, args, cwd=asm_dir)
                     if rc.get("exit_code") == 0:
-                        return {
-                            "assembler": "spades",
-                            "read_type": read_type,
-                            "kingdom": inputs.get("kingdom", "animal"),
-                            "assembly_time": 0,
-                            "assembly_file": str(asm_dir / "contigs.fasta"),
-                            "num_contigs": 3,
-                            "total_length": 16569,
-                            "max_length": 16569,
-                            "n50": 16569,
-                            "n90": 16569,
-                            "gc_content": 16.5,
-                            "coverage": 150.0,
-                            "completeness": 98.0,
-                            "contamination": 0.1
-                        }
+                        # 解析 SPAdes 输出
+                        try:
+                            from ...utils.parsers import parse_spades_output
+                            parsed = parse_spades_output(asm_dir)
+                            
+                            if parsed['success']:
+                                # 转换为 Agent 期望的格式
+                                return {
+                                    "assembler": "spades",
+                                    "read_type": read_type,
+                                    "kingdom": inputs.get("kingdom", "animal"),
+                                    "assembly_time": parsed['metrics'].get('assembly_time_seconds', 0),
+                                    "assembly_file": str(asm_dir / "contigs.fasta"),
+                                    "num_contigs": parsed['metrics'].get('num_contigs', 0),
+                                    "total_length": parsed['metrics'].get('total_length', 0),
+                                    "max_length": parsed['metrics'].get('max_contig_length', 0),
+                                    "n50": parsed['metrics'].get('n50', 0),
+                                    "n90": parsed['metrics'].get('n90', 0),
+                                    "gc_content": parsed['metrics'].get('gc_content', 0),
+                                    "coverage": parsed['metrics'].get('average_coverage', 0),
+                                    "completeness": 0,  # 需要单独评估
+                                    "contamination": 0   # 需要单独评估
+                                }
+                            else:
+                                logger.warning(f"SPAdes parsing failed: {parsed.get('errors')}")
+                        except Exception as e:
+                            logger.warning(f"Failed to parse SPAdes output: {e}")
             if assembler.lower() == "flye":
-                exe = "flye" if shutil.which("flye") else None
+                exe = find_tool("flye")
                 if exe:
                     # 简化：假设 nanopore
                     args = ["--nano-raw", str(reads_file), "-o", str(asm_dir), "--threads", str(threads)]
                     rc = self.run_tool(exe, args, cwd=asm_dir)
                     if rc.get("exit_code") == 0:
-                        return {
-                            "assembler": "flye",
-                            "read_type": read_type,
-                            "kingdom": inputs.get("kingdom", "animal"),
-                            "assembly_time": 0,
-                            "assembly_file": str(asm_dir / "assembly.fasta"),
-                            "num_contigs": 3,
-                            "total_length": 16569,
-                            "max_length": 16569,
-                            "n50": 16569,
-                            "n90": 16569,
-                            "gc_content": 16.5,
-                            "coverage": 150.0,
-                            "completeness": 98.0,
-                            "contamination": 0.1
-                        }
+                        # 解析 Flye 输出
+                        try:
+                            from ...utils.parsers import parse_flye_output
+                            parsed = parse_flye_output(asm_dir)
+                            
+                            if parsed['success']:
+                                return {
+                                    "assembler": "flye",
+                                    "read_type": read_type,
+                                    "kingdom": inputs.get("kingdom", "animal"),
+                                    "assembly_time": parsed['metrics'].get('assembly_time_seconds', 0),
+                                    "assembly_file": str(asm_dir / "assembly.fasta"),
+                                    "num_contigs": parsed['metrics'].get('num_contigs', 0),
+                                    "total_length": parsed['metrics'].get('total_length', 0),
+                                    "max_length": parsed['metrics'].get('max_contig_length', 0),
+                                    "n50": parsed['metrics'].get('n50', 0),
+                                    "n90": parsed['metrics'].get('n90', 0),
+                                    "gc_content": parsed['metrics'].get('gc_content', 0),
+                                    "coverage": parsed['metrics'].get('average_coverage', 0),
+                                    "num_circular": parsed['metrics'].get('num_circular', 0),
+                                    "completeness": 0,
+                                    "contamination": 0
+                                }
+                            else:
+                                logger.warning(f"Flye parsing failed: {parsed.get('errors')}")
+                        except Exception as e:
+                            logger.warning(f"Failed to parse Flye output: {e}")
+            if assembler.lower() in ("getorganelle", "get_organelle_from_reads.py"):
+                exe = find_tool("get_organelle_from_reads.py") or find_tool("getorganelle")
+                if exe:
+                    # GetOrganelle 参数: -1 R1 [-2 R2] -o output -F type -t threads
+                    organelle_type = "embplant_mt" if kingdom == "plant" else "animal_mt"
+                    if reads2_file:
+                        # 双端模式
+                        args = ["-1", str(reads_file), "-2", str(reads2_file),
+                                "-o", str(asm_dir), "-F", organelle_type, "-t", str(threads)]
+                    else:
+                        # 单端模式
+                        args = ["-1", str(reads_file),
+                                "-o", str(asm_dir), "-F", organelle_type, "-t", str(threads)]
+                    rc = self.run_tool(exe, args, cwd=asm_dir)
+                    if rc.get("exit_code") == 0:
+                        # 解析 GetOrganelle 输出
+                        try:
+                            from ...utils.parsers import parse_getorganelle_output
+                            parsed = parse_getorganelle_output(asm_dir)
+                            
+                            if parsed['success']:
+                                return {
+                                    "assembler": "getorganelle",
+                                    "read_type": read_type,
+                                    "kingdom": inputs.get("kingdom", "animal"),
+                                    "assembly_time": parsed['metrics'].get('assembly_time_seconds', 0),
+                                    "assembly_file": parsed['files'].get('path_sequence', ''),
+                                    "num_contigs": parsed['metrics'].get('num_sequences', 0),
+                                    "total_length": parsed['metrics'].get('total_length', 0),
+                                    "max_length": parsed['metrics'].get('max_length', 0),
+                                    "n50": parsed['metrics'].get('total_length', 0),  # GetOrganelle 通常单序列
+                                    "n90": parsed['metrics'].get('total_length', 0),
+                                    "gc_content": parsed['metrics'].get('gc_content', 0),
+                                    "coverage": parsed['metrics'].get('average_coverage', 0),
+                                    "circular_sequences": parsed['metrics'].get('circular_sequences', 0),
+                                    "target_type": parsed['metrics'].get('target_type', ''),
+                                    "completeness": 0,
+                                    "contamination": 0
+                                }
+                            else:
+                                logger.warning(f"GetOrganelle parsing failed: {parsed.get('errors')}")
+                        except Exception as e:
+                            logger.warning(f"Failed to parse GetOrganelle output: {e}")
         except Exception as _e:
             logger.warning(f"Assembly external tool execution failed, fallback to mock: {_e}")
         

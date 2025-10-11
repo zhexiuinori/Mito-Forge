@@ -154,6 +154,25 @@ def _menu(ctx):
         if choice == 1:
             # 运行流水线：最小参数引导；可选“工具选择”
             reads = click.prompt(t["prompt_reads"], default="test.fastq")
+            
+            # 双端测序支持：自动检测或手动输入
+            reads2 = None
+            from mito_forge.utils.paired_end_utils import detect_paired_end
+            auto_r2 = detect_paired_end(reads)
+            if auto_r2:
+                use_auto = click.confirm(
+                    ("检测到双端数据 R2: {}，是否使用?" if lang != "en" else "Detected R2: {}, use it?").format(auto_r2),
+                    default=True
+                )
+                if use_auto:
+                    reads2 = auto_r2
+                else:
+                    if click.confirm(("手动输入 R2 文件?" if lang != "en" else "Manually input R2?"), default=False):
+                        reads2 = click.prompt(("R2 文件路径" if lang != "en" else "R2 file path"))
+            else:
+                if click.confirm(("是否为双端测序?" if lang != "en" else "Paired-end sequencing?"), default=False):
+                    reads2 = click.prompt(("R2 文件路径" if lang != "en" else "R2 file path"))
+            
             output = click.prompt(t["prompt_output"], default="user_analysis_results")
             kingdom = click.prompt(t["prompt_kingdom"], default="animal")
             interactive = click.confirm(t["prompt_interactive"], default=True)
@@ -165,6 +184,7 @@ def _menu(ctx):
             # 统一 kwargs，后面根据是否选择工具再补充
             kwargs = {
                 "reads": reads,
+                "reads2": reads2,  # 添加 R2 支持
                 "output": output,
                 "kingdom": kingdom,
                 "threads": threads,
@@ -253,7 +273,24 @@ def _menu(ctx):
             ctx.invoke(agents, status=True, detailed=detailed, restart=None)
         elif choice == 3:
             # 系统诊断
-            ctx.invoke(doctor)
+            click.echo()
+            click.echo(("=" * 50) if lang != "en" else ("=" * 50))
+            click.echo(("系统诊断" if lang != "en" else "System Doctor"))
+            click.echo(("=" * 50) if lang != "en" else ("=" * 50))
+            
+            # 询问是否自动修复
+            auto_fix = click.confirm(
+                ("是否自动安装缺失的工具?" if lang != "en" else "Auto-install missing tools?"),
+                default=False
+            )
+            
+            # 调用 doctor 命令（使用默认工具列表）
+            from mito_forge.utils.toolcheck import DEFAULT_TOOLS
+            default_tools_str = ",".join(DEFAULT_TOOLS)
+            ctx.invoke(doctor, tools=default_tools_str, fix=auto_fix)
+            
+            click.echo()
+            input(("按 Enter 继续..." if lang != "en" else "Press Enter to continue..."))
         elif choice == 4:
             # 配置管理（只读显示）
             ctx.invoke(config)

@@ -63,6 +63,8 @@ _TEXTS = {
         # Pipeline command
         "header": "🧬 Mito-Forge 流水线（LangGraph 版）",
         "input_file": "输入文件",
+        "input_file2": "输入文件 (R2)",
+        "auto_detect_r2": "自动检测到双端数据 R2",
         "output_dir": "输出目录",
         "kingdom": "物种类型",
         "start": "开始执行流水线...",
@@ -99,7 +101,8 @@ _TEXTS = {
         "cfg_opt_reset": "重置为默认配置",
         "cfg_opt_config_file": "指定配置文件路径",
         # Pipeline help options
-        "pl_opt_reads": "输入测序数据文件",
+        "pl_opt_reads": "输入测序数据文件（R1 或单端）",
+        "pl_opt_reads2": "第二个测序文件（双端测序 R2，可选）",
         "pl_opt_output": "输出目录",
         "pl_opt_threads": "线程数",
         "pl_opt_kingdom": "物种类型",
@@ -223,7 +226,8 @@ _TEXTS = {
         "cfg_opt_reset": "Reset to default configuration",
         "cfg_opt_config_file": "Specify config file path",
         # Pipeline help options
-        "pl_opt_reads": "Input sequencing data file",
+        "pl_opt_reads": "Input sequencing data file (R1 or single-end)",
+        "pl_opt_reads2": "Second sequencing file (paired-end R2, optional)",
         "pl_opt_output": "Output directory",
         "pl_opt_threads": "Number of threads",
         "pl_opt_kingdom": "Kingdom",

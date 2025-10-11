@@ -51,6 +51,7 @@ def _help(key: str) -> str:
 
 @click.command()
 @click.option("--reads", type=click.Path(exists=True), required=True, help=_help("pl_opt_reads"))
+@click.option("--reads2", type=click.Path(exists=True), required=False, help=_help("pl_opt_reads2"))
 @click.option("--output", "-o", type=click.Path(), default="results", help=_help("pl_opt_output"))
 @click.option("--threads", "-t", type=int, default=8, help=_help("pl_opt_threads"))
 @click.option("--kingdom", type=click.Choice(["animal", "plant"]), default="animal", help=_help("pl_opt_kingdom"))
@@ -69,7 +70,7 @@ def _help(key: str) -> str:
     envvar="MITO_SEQ_TYPE",
     help="选择测序类型以匹配合适的工具链；可用 auto/illumina/ont/pacbio-hifi/pacbio-clr/hybrid（也可用环境变量 MITO_SEQ_TYPE 覆盖）",
 )
-def pipeline(reads, output, threads, kingdom, resume, checkpoint, config_file, verbose, interactive, lang, detail_level, seq_type):
+def pipeline(reads, reads2, output, threads, kingdom, resume, checkpoint, config_file, verbose, interactive, lang, detail_level, seq_type):
     """
     运行完整的线粒体基因组组装流水线 / Run the complete mitochondrial genome assembly pipeline
 
@@ -101,6 +102,8 @@ def pipeline(reads, output, threads, kingdom, resume, checkpoint, config_file, v
     
     console.print(f"[bold blue]{_t(lang, 'header')}[/bold blue]")
     console.print(f"{_t(lang, 'input_file')}: {reads}")
+    if reads2:
+        console.print(f"{_t(lang, 'input_file2')}: {reads2}")
     console.print(f"{_t(lang, 'output_dir')}: {output}")
     console.print(f"{_t(lang, 'kingdom')}: {kingdom}")
     console.print()
@@ -116,6 +119,17 @@ def pipeline(reads, output, threads, kingdom, resume, checkpoint, config_file, v
                 "reads": str(reads),
                 "kingdom": kingdom  # 确保kingdom参数传递到inputs中
             }
+            
+            # 添加双端测序支持
+            if reads2:
+                inputs["reads2"] = str(reads2)
+            else:
+                # 尝试自动检测双端数据
+                from ...utils.paired_end_utils import detect_paired_end
+                auto_r2 = detect_paired_end(str(reads))
+                if auto_r2:
+                    inputs["reads2"] = auto_r2
+                    console.print(f"[yellow]🔍 {_t(lang, 'auto_detect_r2')}: {auto_r2}[/yellow]")
             
             config = {
                 "threads": threads,

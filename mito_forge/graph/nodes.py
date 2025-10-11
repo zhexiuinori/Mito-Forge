@@ -217,11 +217,16 @@ def qc_node(state: PipelineState) -> PipelineState:
     1. 运行 FastQC 分析
     2. 根据质量决定是否需要清理
     3. 可选的接头去除和质量修剪
+    4. 支持双端测序数据（R1 和 R2）
     """
     logger.info("Starting QC stage")
     
     try:
         inputs = state["inputs"]
+        # 获取 R2（如果存在）
+        reads2 = inputs.get("reads2")
+        if reads2:
+            logger.info(f"Processing paired-end data: R1={inputs['reads']}, R2={reads2}")
         config = state["config"]
         workdir = Path(state["workdir"])
         
@@ -241,10 +246,15 @@ def qc_node(state: PipelineState) -> PipelineState:
                 qc_agent = QCAgent(state["config"])
                 # 初评（quick/detailed/expert 都会调用一次）
                 base_cfg = {"read_type": "illumina", "detail_level": detail_level, "llm_depth": 1}
+                # 准备 QC inputs，包含 reads2
+                qc_inputs = {"reads": str(inputs["reads"])}
+                if reads2:
+                    qc_inputs["reads2"] = str(reads2)
+                
                 task = TaskSpec(
                     task_id="qc_pipeline",
                     agent_type="qc",
-                    inputs={"reads": str(inputs["reads"])},
+                    inputs=qc_inputs,
                     config=base_cfg,
                     workdir=qc_dir
                 )
@@ -254,10 +264,15 @@ def qc_node(state: PipelineState) -> PipelineState:
                 # expert 追加复核一轮（第二次调用），合并结果
                 if detail_level == "expert":
                     review_cfg = {"read_type": "illumina", "detail_level": "expert", "llm_depth": 2, "review_of": merged_ai}
+                    # 准备 review inputs，也包含 reads2
+                    review_qc_inputs = {"reads": str(inputs["reads"]), "review": True}
+                    if reads2:
+                        review_qc_inputs["reads2"] = str(reads2)
+                    
                     review_task = TaskSpec(
                         task_id="qc_pipeline_review",
                         agent_type="qc",
-                        inputs={"reads": str(inputs["reads"]), "review": True},
+                        inputs=review_qc_inputs,
                         config=review_cfg,
                         workdir=qc_dir
                     )
@@ -287,6 +302,9 @@ def qc_node(state: PipelineState) -> PipelineState:
             "qc_report": str(qc_dir / "fastqc_report.html"),
             "clean_reads": qc_results.get("clean_reads", inputs["reads"])
         }
+        # 如果有 R2，也添加到输出
+        if reads2:
+            files_dict["clean_reads2"] = qc_results.get("clean_reads2", reads2)
         if ai_file:
             files_dict["qc_ai_analysis"] = ai_file
         
@@ -341,15 +359,18 @@ def assembly_node(state: PipelineState) -> PipelineState:
         # 获取 QC 后的数据
         qc_outputs = state["stage_outputs"].get("qc", {})
         reads_file = qc_outputs.get("files", {}).get("clean_reads", state["inputs"]["reads"])
+        reads2_file = qc_outputs.get("files", {}).get("clean_reads2", state["inputs"].get("reads2"))
         
         # 若清洗后的reads文件不存在，则回退到原始reads
         try:
             if not Path(reads_file).exists():
                 logger.warning(f"Clean reads not found at {reads_file}, falling back to original input reads")
                 reads_file = state["inputs"]["reads"]
+                reads2_file = state["inputs"].get("reads2")
         except Exception as _e:
             logger.warning(f"Failed to validate clean_reads path ({reads_file}), fallback to original reads: {_e}")
             reads_file = state["inputs"]["reads"]
+            reads2_file = state["inputs"].get("reads2")
         
         # 创建组装工作目录
         assembly_dir = workdir / "02_assembly"
@@ -378,10 +399,20 @@ def assembly_node(state: PipelineState) -> PipelineState:
                 detected_rt = state["config"].get("detected_read_type", "illumina")
                 # 初评一次（所有分级都会执行）
                 base_cfg = {"assembler": assembler, "detail_level": detail_level, "llm_depth": 1}
+                # 准备 inputs，包含 reads2
+                agent_inputs = {
+                    "reads": str(reads_file),
+                    "read_type": detected_rt,
+                    "kingdom": state["config"].get("kingdom", "animal"),
+                    "assembler": assembler
+                }
+                if reads2_file:
+                    agent_inputs["reads2"] = str(reads2_file)
+                
                 task = TaskSpec(
                     task_id="assembly_pipeline",
                     agent_type="assembly",
-                    inputs={"reads": str(reads_file), "read_type": detected_rt, "kingdom": state["config"].get("kingdom", "animal")},
+                    inputs=agent_inputs,
                     config=base_cfg,
                     workdir=assembly_dir
                 )
@@ -391,10 +422,21 @@ def assembly_node(state: PipelineState) -> PipelineState:
                 # expert 追加一轮复核
                 if detail_level == "expert":
                     review_cfg = {"assembler": assembler, "detail_level": "expert", "llm_depth": 2, "review_of": merged_ai}
+                    # 准备 review inputs，也包含 reads2
+                    review_inputs = {
+                        "reads": str(reads_file),
+                        "read_type": detected_rt,
+                        "kingdom": state["config"].get("kingdom", "animal"),
+                        "assembler": assembler,
+                        "review": True
+                    }
+                    if reads2_file:
+                        review_inputs["reads2"] = str(reads2_file)
+                    
                     review_task = TaskSpec(
                         task_id="assembly_pipeline_review",
                         agent_type="assembly",
-                        inputs={"reads": str(reads_file), "read_type": detected_rt, "kingdom": state["config"].get("kingdom", "animal"), "review": True},
+                        inputs=review_inputs,
                         config=review_cfg,
                         workdir=assembly_dir
                     )

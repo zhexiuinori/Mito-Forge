@@ -236,8 +236,71 @@ class AnnotationAgent(BaseAgent):
         
         logger.info(f"Running annotation with {annotator} on {assembly_file}")
         
-        # 这里应该调用实际的注释工具
-        # 目前返回模拟数据
+        # 尝试运行真实注释工具
+        try:
+            import shutil
+            from pathlib import Path
+            
+            ann_dir = (self.workdir or Path(".")) / "annotation"
+            ann_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 检查工具是否存在
+            def find_tool(tool_name: str) -> str:
+                if shutil.which(tool_name):
+                    return tool_name
+                try:
+                    from ...utils.tools_manager import ToolsManager
+                    tm = ToolsManager(project_root=Path.cwd())
+                    p = tm.where(tool_name)
+                    if p:
+                        return str(p)
+                except Exception:
+                    pass
+                return None
+            
+            if annotator.lower() == "mitos":
+                exe = find_tool("runmitos.py") or find_tool("mitos")
+                if exe:
+                    # MITOS 参数: --input assembly.fasta --code 2 --outdir output
+                    genetic_code = 2 if kingdom == "animal" else 1
+                    args = [
+                        "--input", str(assembly_file),
+                        "--code", str(genetic_code),
+                        "--outdir", str(ann_dir)
+                    ]
+                    rc = self.run_tool(exe, args, cwd=ann_dir)
+                    if rc.get("exit_code") == 0:
+                        # 解析 MITOS 输出
+                        try:
+                            from ...utils.parsers import parse_mitos_output
+                            parsed = parse_mitos_output(ann_dir)
+                            
+                            if parsed['success']:
+                                return {
+                                    "annotator": "mitos",
+                                    "genome_length": 0,  # 需要从 assembly_file 获取
+                                    "kingdom": kingdom,
+                                    "genetic_code": genetic_code,
+                                    "annotation_file": parsed['files'].get('gff', ''),
+                                    "total_genes": parsed['metrics'].get('total_genes', 0),
+                                    "protein_genes": parsed['metrics'].get('cds_count', 0),
+                                    "trna_genes": parsed['metrics'].get('trna_count', 0),
+                                    "rrna_genes": parsed['metrics'].get('rrna_count', 0),
+                                    "other_genes": 0,
+                                    "coding_coverage": 0,  # 需要计算
+                                    "genome_utilization": 0,
+                                    "avg_gene_length": 0,
+                                    "detected_issues": [],
+                                    "gene_details": parsed['metrics'].get('genes', [])
+                                }
+                            else:
+                                logger.warning(f"MITOS parsing failed: {parsed.get('errors')}")
+                        except Exception as e:
+                            logger.warning(f"Failed to parse MITOS output: {e}")
+        except Exception as _e:
+            logger.warning(f"Annotation external tool execution failed, fallback to mock: {_e}")
+        
+        # 回退：模拟数据
         mock_results = {
             "annotator": annotator,
             "genome_length": 16569,

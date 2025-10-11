@@ -204,9 +204,13 @@ class QCAgent(BaseAgent):
     def run_qc_analysis(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """运行基础 QC 分析工具"""
         reads_file = inputs["reads"]
+        reads2_file = inputs.get("reads2")  # 双端测序 R2
         read_type = inputs.get("read_type", "illumina")
         
-        logger.info(f"Running QC analysis on {reads_file}")
+        if reads2_file:
+            logger.info(f"Running QC analysis on paired-end data: {reads_file} + {reads2_file}")
+        else:
+            logger.info(f"Running QC analysis on {reads_file}")
         # 优先尝试真实工具：fastqc 或 NanoPlot
         try:
             import shutil
@@ -214,14 +218,61 @@ class QCAgent(BaseAgent):
             qc_dir.mkdir(parents=True, exist_ok=True)
             # 简单策略：Illumina 优先 fastqc，其他优先 NanoPlot
             prefer_fastqc = (str(read_type).lower() == "illumina")
-            fastqc_exists = shutil.which("fastqc") is not None
-            nanoplot_exists = shutil.which("NanoPlot") is not None or shutil.which("nanoplot") is not None
+            
+            # 检查工具是否存在（系统 PATH 或项目本地）
+            def tool_exists(tool_name: str) -> bool:
+                if shutil.which(tool_name):
+                    return True
+                try:
+                    from ...utils.tools_manager import ToolsManager
+                    tm = ToolsManager(project_root=Path.cwd())
+                    return tm.where(tool_name) is not None
+                except Exception:
+                    return False
+            
+            fastqc_exists = tool_exists("fastqc")
+            nanoplot_exists = tool_exists("NanoPlot") or tool_exists("nanoplot")
             if self.config.get("dry_run"):
                 pass  # run_tool 内部会处理
             if prefer_fastqc and fastqc_exists:
-                rc = self.run_tool("fastqc", ["-o", str(qc_dir), str(reads_file)], cwd=qc_dir)
-                if rc.get("exit_code") == 0:
-                    # 返回一个轻量统计骨架，避免解析文件
+                # 运行 FastQC for R1
+                rc1 = self.run_tool("fastqc", ["-o", str(qc_dir.absolute()), str(Path(reads_file).absolute())], cwd=qc_dir)
+                
+                # 如果是双端数据，也对 R2 运行 QC
+                if reads2_file and rc1.get("exit_code") == 0:
+                    rc2 = self.run_tool("fastqc", ["-o", str(qc_dir.absolute()), str(Path(reads2_file).absolute())], cwd=qc_dir)
+                
+                if rc1.get("exit_code") == 0:
+                    # 解析 FastQC 输出
+                    try:
+                        from ...utils.parsers import find_fastqc_output, parse_fastqc_output
+                        zip_file_r1 = find_fastqc_output(qc_dir, Path(reads_file))
+                        
+                        if zip_file_r1 and zip_file_r1.exists():
+                            result_r1 = parse_fastqc_output(zip_file_r1)
+                            result_r1["read_type"] = read_type
+                            
+                            # 如果有 R2，解析并合并
+                            if reads2_file:
+                                zip_file_r2 = find_fastqc_output(qc_dir, Path(reads2_file))
+                                if zip_file_r2 and zip_file_r2.exists():
+                                    result_r2 = parse_fastqc_output(zip_file_r2)
+                                    # 合并 R1 和 R2 的指标
+                                    from ...utils.paired_end_utils import merge_paired_qc_metrics
+                                    if result_r1.get('success') and result_r2.get('success'):
+                                        merged = merge_paired_qc_metrics(result_r1['metrics'], result_r2['metrics'])
+                                        merged["read_type"] = read_type
+                                        return merged
+                            
+                            # 单端或 R2 解析失败时返回 R1 结果
+                            result = result_r1
+                            return result
+                        else:
+                            logger.warning(f"FastQC output zip not found, using fallback data")
+                    except Exception as e:
+                        logger.warning(f"Failed to parse FastQC output: {e}, using fallback data")
+                    
+                    # Fallback: 返回基础统计
                     return {
                         "filename": Path(reads_file).name,
                         "read_type": read_type,
@@ -241,21 +292,28 @@ class QCAgent(BaseAgent):
                 exe = "NanoPlot" if shutil.which("NanoPlot") else "nanoplot"
                 rc = self.run_tool(exe, ["--fastq", str(reads_file), "-o", str(qc_dir)], cwd=qc_dir)
                 if rc.get("exit_code") == 0:
-                    return {
-                        "filename": Path(reads_file).name,
-                        "read_type": read_type,
-                        "total_reads": 800000,
-                        "total_bases": 120000000,
-                        "avg_length": 150,
-                        "avg_quality": 28.0,
-                        "q20_percent": 88.0,
-                        "q30_percent": 80.0,
-                        "gc_content": 41.0,
-                        "min_length": 35,
-                        "max_length": 151,
-                        "n50": 150,
-                        "detected_issues": []
-                    }
+                    # 解析 NanoPlot 输出
+                    try:
+                        from ...utils.parsers import parse_nanoplot_output
+                        parsed = parse_nanoplot_output(qc_dir)
+                        
+                        if parsed['success']:
+                            return {
+                                "filename": Path(reads_file).name,
+                                "read_type": read_type,
+                                "total_reads": parsed['metrics'].get('total_reads', 0),
+                                "total_bases": parsed['metrics'].get('total_bases', 0),
+                                "avg_length": parsed['metrics'].get('avg_length', 0),
+                                "avg_quality": parsed['metrics'].get('avg_quality', 0),
+                                "q20_percent": parsed['metrics'].get('q20_percent', 0),
+                                "gc_content": parsed['metrics'].get('gc_content', 0),
+                                "n50": parsed['metrics'].get('n50', 0),
+                                "detected_issues": []
+                            }
+                        else:
+                            logger.warning(f"NanoPlot parsing failed: {parsed.get('errors')}")
+                    except Exception as e:
+                        logger.warning(f"Failed to parse NanoPlot output: {e}")
         except Exception as _e:
             logger.warning(f"QC external tool execution failed, fallback to mock: {_e}")
         
@@ -292,6 +350,18 @@ class QCAgent(BaseAgent):
         logger.info("Analyzing QC results with AI...")
         
         # 准备分析输入
+        # 格式化 detected_issues
+        detected_issues_list = qc_results.get("detected_issues", [])
+        if detected_issues_list and isinstance(detected_issues_list[0], dict):
+            # 新格式：列表of dict
+            detected_issues_str = "\n".join([
+                f"- {issue.get('type', 'Unknown')}: {issue.get('description', '')} (severity: {issue.get('severity', 'unknown')})"
+                for issue in detected_issues_list
+            ])
+        else:
+            # 旧格式：列表 of str
+            detected_issues_str = "\n".join(detected_issues_list)
+        
         analysis_input = {
             "filename": qc_results.get("filename", "unknown"),
             "read_type": qc_results.get("read_type", "unknown"),
@@ -305,7 +375,7 @@ class QCAgent(BaseAgent):
             "min_length": qc_results.get("min_length", 0),
             "max_length": qc_results.get("max_length", 0),
             "n50": qc_results.get("n50", 0),
-            "detected_issues": "\n".join(qc_results.get("detected_issues", []))
+            "detected_issues": detected_issues_str
         }
         
         # 构建提示词
