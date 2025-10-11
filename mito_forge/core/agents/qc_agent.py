@@ -151,6 +151,247 @@ class QCAgent(BaseAgent):
         
         return True
     
+    def _diagnose_qc_error(self, error_msg: str, stderr_content: str,
+                          stdout_content: str, tool_name: str) -> Dict[str, Any]:
+        """
+        诊断 QC 错误
+        
+        Args:
+            error_msg: 异常消息
+            stderr_content: 标准错误输出
+            stdout_content: 标准输出
+            tool_name: 工具名称
+        
+        Returns:
+            诊断结果，包含错误类型、能否修复、修复建议
+        """
+        diagnosis_prompt = f"""分析以下质量控制错误：
+
+工具: {tool_name}
+异常: {error_msg}
+
+标准错误输出（最后1000字符）:
+```
+{stderr_content[-1000:] if stderr_content else "无"}
+```
+
+标准输出（最后1000字符）:
+```
+{stdout_content[-1000:] if stdout_content else "无"}
+```
+
+请诊断：
+1. 错误类型：tool_not_found/out_of_memory/timeout/parameter_error/data_format/tool_bug/unknown
+2. 根本原因：简洁说明
+3. 能否自动修复：true/false
+4. 修复建议：
+   - 如果是工具不可用：推荐备选工具
+   - 如果是内存不足：减少线程
+   - 如果是格式错误：尝试其他工具
+   - 如果是数据问题：无法修复
+
+输出 JSON 格式：
+{{
+  "error_type": "类型",
+  "root_cause": "原因",
+  "can_fix": true/false,
+  "fix_strategy": "retry/adjust_params/switch_tool/abort",
+  "suggestions": {{
+    "alternative_tool": "工具名或null",
+    "parameter_adjustments": {{"参数": "值"}},
+    "explanation": "为什么这样能解决"
+  }}
+}}"""
+        
+        try:
+            diagnosis = self.call_llm(
+                diagnosis_prompt,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "error_type": {"type": "string"},
+                        "root_cause": {"type": "string"},
+                        "can_fix": {"type": "boolean"},
+                        "fix_strategy": {"type": "string"},
+                        "suggestions": {"type": "object"}
+                    }
+                },
+                temperature=0.3
+            )
+            logger.info(f"🔍 QC Error diagnosis: {diagnosis['error_type']} - {diagnosis['root_cause']}")
+            return diagnosis
+        except Exception as e:
+            logger.warning(f"AI diagnosis failed: {e}, using rule-based diagnosis")
+            return self._rule_based_diagnosis(error_msg, stderr_content)
+    
+    def _rule_based_diagnosis(self, error_msg: str, stderr: str) -> Dict[str, Any]:
+        """基于规则的简单错误诊断（AI 不可用时的备选）"""
+        error_lower = (error_msg + " " + stderr).lower()
+        
+        if "not found" in error_lower or "command not found" in error_lower:
+            return {
+                "error_type": "tool_not_found",
+                "root_cause": "QC tool not installed",
+                "can_fix": True,
+                "fix_strategy": "switch_tool",
+                "suggestions": {
+                    "alternative_tool": "nanoplot",
+                    "explanation": "Try alternative QC tool"
+                }
+            }
+        elif "out of memory" in error_lower or "oom" in error_lower:
+            return {
+                "error_type": "out_of_memory",
+                "root_cause": "Memory exhausted",
+                "can_fix": True,
+                "fix_strategy": "adjust_params",
+                "suggestions": {
+                    "parameter_adjustments": {"threads": "reduce_half"},
+                    "explanation": "Reduce threads to save memory"
+                }
+            }
+        elif "format" in error_lower or "invalid" in error_lower:
+            return {
+                "error_type": "data_format",
+                "root_cause": "Input format error",
+                "can_fix": False,
+                "fix_strategy": "abort",
+                "suggestions": {
+                    "explanation": "Input data format is invalid"
+                }
+            }
+        else:
+            return {
+                "error_type": "unknown",
+                "root_cause": "Unknown QC error",
+                "can_fix": False,
+                "fix_strategy": "abort",
+                "suggestions": {}
+            }
+    
+    def _execute_qc_with_retry(self, inputs: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
+        """
+        智能执行 QC，包含完整的错误处理和自动修复
+        
+        这是 Agent 的核心能力：自己处理错误，自己尝试修复
+        
+        Args:
+            inputs: 输入数据
+            max_retries: 最大重试次数
+        
+        Returns:
+            QC 结果
+        
+        Raises:
+            RuntimeError: 确实无法修复时抛出
+        """
+        retry_count = 0
+        current_params = {
+            "threads": int(self.config.get("threads", 4))
+        }
+        current_tool = inputs.get("qc_tool", "fastqc")
+        
+        while retry_count <= max_retries:
+            try:
+                inputs_copy = inputs.copy()
+                inputs_copy["qc_tool"] = current_tool
+                inputs_copy.update(current_params)
+                
+                logger.info(
+                    f"🔧 QC attempt {retry_count + 1}/{max_retries + 1} "
+                    f"with {current_tool}"
+                )
+                
+                # 执行 QC
+                result = self.run_qc_analysis(inputs_copy)
+                
+                logger.info(f"✅ QC succeeded on attempt {retry_count + 1}")
+                return result
+                
+            except Exception as e:
+                retry_count += 1
+                error_msg = str(e)
+                
+                logger.warning(f"❌ QC attempt {retry_count} failed: {error_msg}")
+                
+                # 如果达到最大重试次数，放弃
+                if retry_count > max_retries:
+                    logger.error(
+                        f"💔 QC failed after {max_retries} retries. "
+                        f"Cannot auto-fix. Last error: {error_msg}"
+                    )
+                    raise RuntimeError(
+                        f"QC analysis failed after {max_retries} attempts.\n"
+                        f"Tool: {current_tool}\n"
+                        f"Last error: {error_msg}\n"
+                        f"Please check:\n"
+                        f"1. Tool installation (fastqc, nanoplot)\n"
+                        f"2. Input data format and integrity\n"
+                        f"3. System resources\n"
+                        f"4. Logs in {self.workdir}/qc/"
+                    )
+                
+                # 读取错误日志
+                stderr_content = ""
+                stdout_content = ""
+                try:
+                    stderr_path = self.workdir / "qc" / "stderr.log"
+                    stdout_path = self.workdir / "qc" / "stdout.log"
+                    if stderr_path.exists():
+                        stderr_content = stderr_path.read_text(encoding='utf-8', errors='ignore')
+                    if stdout_path.exists():
+                        stdout_content = stdout_path.read_text(encoding='utf-8', errors='ignore')
+                except Exception:
+                    pass
+                
+                # AI 诊断错误
+                diagnosis = self._diagnose_qc_error(
+                    error_msg, stderr_content, stdout_content, current_tool
+                )
+                
+                # 判断能否修复
+                if not diagnosis["can_fix"]:
+                    logger.error(f"💔 Error cannot be auto-fixed: {diagnosis['root_cause']}")
+                    raise RuntimeError(
+                        f"QC error cannot be automatically fixed.\n"
+                        f"Error type: {diagnosis['error_type']}\n"
+                        f"Root cause: {diagnosis['root_cause']}\n"
+                        f"Please fix manually and retry."
+                    )
+                
+                # 根据诊断结果修复
+                fix_strategy = diagnosis["fix_strategy"]
+                suggestions = diagnosis.get("suggestions", {})
+                
+                if fix_strategy == "switch_tool":
+                    alt_tool = suggestions.get("alternative_tool")
+                    if alt_tool:
+                        logger.info(f"🔄 Switching from {current_tool} to {alt_tool}")
+                        logger.info(f"   Reason: {suggestions.get('explanation', 'N/A')}")
+                        current_tool = alt_tool
+                    else:
+                        logger.error("No alternative tool available")
+                        continue
+                
+                elif fix_strategy == "adjust_params":
+                    param_adjustments = suggestions.get("parameter_adjustments", {})
+                    if param_adjustments:
+                        adjusted = self.auto_adjust_parameters(error_msg, current_params)
+                        current_params.update(adjusted)
+                        logger.info(f"🔧 Adjusted parameters: {param_adjustments}")
+                        logger.info(f"   Reason: {suggestions.get('explanation', 'N/A')}")
+                    else:
+                        logger.warning("No parameter adjustments suggested, simple retry")
+                
+                elif fix_strategy == "retry":
+                    logger.info("🔄 Simple retry without changes")
+                
+                else:
+                    logger.warning(f"Unknown fix strategy: {fix_strategy}, aborting")
+                    raise RuntimeError(f"Unknown fix strategy: {fix_strategy}")
+        
+        raise RuntimeError("Unexpected error in retry loop")
+    
     def execute_stage(self, inputs: Dict[str, Any]) -> StageResult:
         """执行质量控制分析阶段"""
         self.status = AgentStatus.RUNNING
@@ -161,8 +402,8 @@ class QCAgent(BaseAgent):
             if not self.validate_inputs(inputs):
                 raise ValueError("Input validation failed")
             
-            # 执行 QC 分析
-            qc_results = self.run_qc_analysis(inputs)
+            # 执行 QC 分析（带智能错误处理和重试）
+            qc_results = self._execute_qc_with_retry(inputs, max_retries=3)
             
             # AI 分析结果
             ai_analysis = self.analyze_qc_results(qc_results)
