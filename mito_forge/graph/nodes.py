@@ -620,6 +620,112 @@ def annotation_node(state: PipelineState) -> PipelineState:
         state["route"] = "continue"
         return state
 
+def polish_node(state: PipelineState) -> PipelineState:
+    """
+    抛光节点 - 提高组装准确性
+    
+    职责：
+    1. 根据数据类型和策略选择抛光工具
+    2. 执行序列抛光（Racon/Pilon/Medaka）
+    3. 质量对比（抛光前后）
+    4. 更新组装结果
+    
+    抛光策略：
+    - Illumina: Pilon（需要比对）
+    - Nanopore: Racon + Medaka（推荐）
+    - PacBio CLR: Racon 多轮
+    - PacBio HiFi: 通常不需要抛光
+    """
+    logger.info("Starting Polishing stage")
+    
+    start_stage(state, "polish")
+    
+    try:
+        config = state["config"]
+        workdir = Path(state["workdir"])
+        
+        # 获取组装结果
+        assembly_outputs = state["stage_outputs"].get("assembly", {})
+        assembly_file = assembly_outputs.get("files", {}).get("assembly")
+        
+        if not assembly_file or not Path(assembly_file).exists():
+            logger.error("Assembly file not found, skipping polishing")
+            skip_stage(state, "polish", "no_assembly_file")
+            state["route"] = "continue"
+            return state
+        
+        # 检查是否需要抛光
+        tool_chain = config.get("tool_chain", {})
+        polishing_tool = tool_chain.get("polishing")
+        
+        if not polishing_tool:
+            logger.info("No polishing tool specified, skipping polishing")
+            skip_stage(state, "polish", "not_needed")
+            state["route"] = "continue"
+            return state
+        
+        # 创建抛光工作目录
+        polish_dir = workdir / "03_polish"
+        polish_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 获取原始读段
+        qc_outputs = state["stage_outputs"].get("qc", {})
+        reads_file = qc_outputs.get("files", {}).get("clean_reads", state["inputs"]["reads"])
+        reads2_file = qc_outputs.get("files", {}).get("clean_reads2", state["inputs"].get("reads2"))
+        
+        # 获取数据类型
+        read_type = config.get("detected_read_type", "illumina")
+        
+        # 执行抛光
+        logger.info(f"Running {polishing_tool} polishing on {read_type} data")
+        
+        polish_results = _run_polishing(
+            reads_file=reads_file,
+            reads2_file=reads2_file,
+            assembly_file=assembly_file,
+            output_dir=polish_dir,
+            tool=polishing_tool,
+            read_type=read_type,
+            threads=config.get("threads", 4)
+        )
+        
+        # 标记完成
+        files_dict = {
+            "polished_assembly": polish_results["polished_file"],
+            "original_assembly": assembly_file
+        }
+        
+        metrics_dict = {
+            "tool": polishing_tool,
+            "iterations": polish_results.get("iterations", 1),
+            "improvement": _calculate_improvement(
+                assembly_file, 
+                polish_results["polished_file"]
+            )
+        }
+        
+        complete_stage(
+            state,
+            "polish",
+            files=files_dict,
+            metrics=metrics_dict
+        )
+        
+        # 更新组装文件为抛光后的版本
+        state["stage_outputs"]["assembly"]["files"]["assembly"] = polish_results["polished_file"]
+        
+        state["route"] = "continue"
+        logger.info(f"Polishing completed with {polishing_tool}")
+        
+        return state
+        
+    except Exception as e:
+        logger.error(f"Polishing failed: {e}")
+        fail_stage(state, "polish", str(e))
+        # 抛光失败不致命，继续后续流程
+        state["route"] = "continue"
+        return state
+
 def report_node(state: PipelineState) -> PipelineState:
     """
     报告生成节点
@@ -1311,3 +1417,136 @@ def _get_fallback_assembler(current_assembler: str) -> str:
         "unicycler": "flye"
     }
     return fallbacks.get(current_assembler)
+
+def _run_polishing(
+    reads_file: str,
+    reads2_file: Optional[str],
+    assembly_file: str,
+    output_dir: Path,
+    tool: str,
+    read_type: str,
+    threads: int = 4
+) -> Dict[str, Any]:
+    """
+    执行抛光
+    
+    根据工具类型和数据类型选择合适的抛光策略
+    """
+    from ..tools import run_racon, run_pilon, run_medaka
+    
+    logger.info(f"Running polishing with {tool} on {read_type} data")
+    
+    reads_path = Path(reads_file)
+    reads2_path = Path(reads2_file) if reads2_file else None
+    assembly_path = Path(assembly_file)
+    
+    try:
+        if tool.lower() == "racon":
+            # Racon 用于长读数据
+            minimap_preset = "map-ont" if "nanopore" in read_type.lower() else "map-pb"
+            iterations = 3 if "clr" in read_type.lower() else 2
+            
+            result = run_racon(
+                reads=reads_path,
+                assembly=assembly_path,
+                output_dir=output_dir,
+                threads=threads,
+                iterations=iterations,
+                minimap_preset=minimap_preset
+            )
+            
+        elif tool.lower() == "pilon":
+            # Pilon 用于短读数据
+            result = run_pilon(
+                reads=reads_path,
+                reads2=reads2_path,
+                assembly=assembly_path,
+                output_dir=output_dir,
+                threads=threads,
+                memory="16G",
+                iterations=1
+            )
+            
+        elif tool.lower() == "medaka":
+            # Medaka 用于 Nanopore 数据
+            # 根据实际化学配方选择模型（这里使用默认）
+            result = run_medaka(
+                reads=reads_path,
+                assembly=assembly_path,
+                output_dir=output_dir,
+                model="r941_min_high_g360",
+                threads=threads
+            )
+            
+        else:
+            raise ValueError(f"Unknown polishing tool: {tool}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Polishing with {tool} failed: {e}")
+        raise
+
+def _calculate_improvement(original_file: str, polished_file: str) -> Dict[str, Any]:
+    """
+    计算抛光改进
+    
+    对比抛光前后的统计信息
+    """
+    try:
+        from Bio import SeqIO
+        
+        # 读取原始序列
+        orig_seqs = list(SeqIO.parse(original_file, "fasta"))
+        orig_lengths = [len(seq) for seq in orig_seqs]
+        
+        # 读取抛光后序列
+        polish_seqs = list(SeqIO.parse(polished_file, "fasta"))
+        polish_lengths = [len(seq) for seq in polish_seqs]
+        
+        if not orig_lengths or not polish_lengths:
+            return {"status": "no_data"}
+        
+        # 计算统计
+        orig_total = sum(orig_lengths)
+        polish_total = sum(polish_lengths)
+        
+        orig_n50 = _calculate_n50(orig_lengths)
+        polish_n50 = _calculate_n50(polish_lengths)
+        
+        return {
+            "status": "calculated",
+            "length_change": polish_total - orig_total,
+            "length_change_pct": ((polish_total - orig_total) / orig_total * 100) if orig_total > 0 else 0,
+            "n50_change": polish_n50 - orig_n50,
+            "n50_change_pct": ((polish_n50 - orig_n50) / orig_n50 * 100) if orig_n50 > 0 else 0,
+            "original": {
+                "total_length": orig_total,
+                "num_contigs": len(orig_lengths),
+                "n50": orig_n50
+            },
+            "polished": {
+                "total_length": polish_total,
+                "num_contigs": len(polish_lengths),
+                "n50": polish_n50
+            }
+        }
+    except Exception as e:
+        logger.warning(f"Failed to calculate improvement: {e}")
+        return {"status": "error", "message": str(e)}
+
+def _calculate_n50(lengths: list) -> int:
+    """计算 N50"""
+    if not lengths:
+        return 0
+    
+    sorted_lengths = sorted(lengths, reverse=True)
+    total = sum(sorted_lengths)
+    cumsum = 0
+    
+    for length in sorted_lengths:
+        cumsum += length
+        if cumsum >= total / 2:
+            return length
+    
+    return 0

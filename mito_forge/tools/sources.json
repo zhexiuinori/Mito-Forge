@@ -2,6 +2,8 @@
   "pmat2": {
     "repo": "github",
     "version": "v2.1.5",
+    "type": "source_with_makefile",
+    "executable": "PMAT2",
     "assets": {
       "win": {
         "url": "https://codeload.github.com/aiPGAB/PMAT2/zip/refs/tags/v2.1.5"
@@ -11,6 +13,197 @@
       },
       "mac": {
         "url": "https://codeload.github.com/aiPGAB/PMAT2/tar.gz/refs/tags/v2.1.5"
+      }
+    }
+  },
+  "getorganelle": {
+    "repo": "github",
+    "version": "1.7.7.1",
+    "type": "python_package",
+    "executable": "get_organelle_from_reads.py",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/Kinggerm/GetOrganelle/archive/refs/tags/1.7.7.1.tar.gz"
+      },
+      "mac": {
+        "url": "https://github.com/Kinggerm/GetOrganelle/archive/refs/tags/1.7.7.1.tar.gz"
+      }
+    }
+  },
+  "spades": {
+    "repo": "github",
+    "version": "v4.2.0",
+    "type": "precompiled",
+    "executable": "SPAdes-4.2.0-Linux/bin/spades.py",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/ablab/spades/releases/download/v4.2.0/SPAdes-4.2.0-Linux.tar.gz"
+      }
+    }
+  },
+  "fastqc": {
+    "repo": "github",
+    "version": "v0.12.1",
+    "type": "precompiled",
+    "executable": "FastQC/fastqc",
+    "assets": {
+      "linux": {
+        "url": "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.12.1.zip"
+      },
+      "mac": {
+        "url": "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.12.1.zip"
+      }
+    }
+  },
+  "novoplasty": {
+    "repo": "github",
+    "version": "4.3.5",
+    "type": "perl_script",
+    "executable": "NOVOPlasty-4.3.5/NOVOPlasty4.3.5.pl",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/ndierckx/NOVOPlasty/archive/refs/tags/v4.3.5.tar.gz"
+      },
+      "mac": {
+        "url": "https://github.com/ndierckx/NOVOPlasty/archive/refs/tags/v4.3.5.tar.gz"
+      }
+    }
+  },
+  "flye": {
+    "repo": "github",
+    "version": "2.9.6",
+    "type": "python_package",
+    "executable": "Flye-2.9.6/bin/flye",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/mikolmogorov/Flye/archive/refs/tags/2.9.6.tar.gz"
+      },
+      "mac": {
+        "url": "https://github.com/mikolmogorov/Flye/archive/refs/tags/2.9.6.tar.gz"
+      }
+    }
+  },
+  "unicycler": {
+    "repo": "github",
+    "version": "0.5.0",
+    "type": "python_package",
+    "executable": "Unicycler-0.5.0/unicycler-runner.py",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/rrwick/Unicycler/archive/refs/tags/v0.5.0.tar.gz"
+      },
+      "mac": {
+        "url": "https://github.com/rrwick/Unicycler/archive/refs/tags/v0.5.0.tar.gz"
+      }
+    }
+  },
+  "nanoplot": {
+    "repo": "github",
+    "version": "1.42.0",
+    "type": "python_package",
+    "executable": "NanoPlot",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/wdecoster/NanoPlot/archive/refs/tags/v1.42.0.tar.gz"
+      },
+      "mac": {
+        "url": "https://github.com/wdecoster/NanoPlot/archive/refs/tags/v1.42.0.tar.gz"
+      }
+    }
+  },
+  "racon": {
+    "repo": "github",
+    "version": "1.5.0",
+    "type": "precompiled",
+    "executable": "racon-v1.5.0/build/bin/racon",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/isovic/racon/releases/download/1.5.0/racon-v1.5.0.tar.gz"
+      }
+    }
+  },
+  "minimap2": {
+    "repo": "github",
+    "version": "2.28",
+    "type": "precompiled",
+    "executable": "minimap2-2.28_x64-linux/minimap2",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/lh3/minimap2/releases/download/v2.28/minimap2-2.28_x64-linux.tar.bz2"
+      },
+      "mac": {
+        "url": "https://github.com/lh3/minimap2/releases/download/v2.28/minimap2-2.28_x64-darwin.tar.bz2"
+      }
+    }
+  },
+  "quast": {
+    "repo": "github",
+    "version": "5.2.0",
+    "type": "python_package",
+    "executable": "quast-5.2.0/quast.py",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/ablab/quast/releases/download/quast_5.2.0/quast-5.2.0.tar.gz"
+      },
+      "mac": {
+        "url": "https://github.com/ablab/quast/releases/download/quast_5.2.0/quast-5.2.0.tar.gz"
+      }
+    }
+  },
+  "pilon": {
+    "repo": "github",
+    "version": "1.24",
+    "type": "java_jar",
+    "executable": "pilon-1.24.jar",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/broadinstitute/pilon/releases/download/v1.24/pilon-1.24.jar"
+      },
+      "mac": {
+        "url": "https://github.com/broadinstitute/pilon/releases/download/v1.24/pilon-1.24.jar"
+      }
+    }
+  },
+  "medaka": {
+    "repo": "github",
+    "version": "2.1.1",
+    "type": "python_package",
+    "executable": "medaka-2.1.1/medaka",
+    "assets": {
+      "linux": {
+        "url": "https://github.com/nanoporetech/medaka/archive/refs/tags/v2.1.1.tar.gz"
+      },
+      "mac": {
+        "url": "https://github.com/nanoporetech/medaka/archive/refs/tags/v2.1.1.tar.gz"
+      }
+    }
+  },
+  "blast": {
+    "repo": "ncbi",
+    "version": "2.16.0",
+    "type": "precompiled",
+    "executable": "ncbi-blast-2.16.0+/bin/blastn",
+    "assets": {
+      "linux": {
+        "url": "https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.16.0/ncbi-blast-2.16.0+-x64-linux.tar.gz"
+      },
+      "mac": {
+        "url": "https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.16.0/ncbi-blast-2.16.0+-x64-macosx.tar.gz"
+      }
+    }
+  },
+  "mitos": {
+    "repo": "gitlab",
+    "version": "2.1.9",
+    "type": "python_package",
+    "executable": "mitos/runmitos.py",
+    "note": "Requires reference data to be downloaded separately",
+    "assets": {
+      "linux": {
+        "url": "https://gitlab.com/Bernt/MITOS/-/archive/v2.1.9/MITOS-v2.1.9.tar.gz"
+      },
+      "mac": {
+        "url": "https://gitlab.com/Bernt/MITOS/-/archive/v2.1.9/MITOS-v2.1.9.tar.gz"
       }
     }
   }
