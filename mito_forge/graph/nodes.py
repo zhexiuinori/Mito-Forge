@@ -1396,13 +1396,41 @@ def _run_annotation(mito_fasta: str, annotation_dir: Path, config: Dict[str, Any
     }
 
 def _generate_report(state: PipelineState, report_dir: Path) -> Dict[str, Any]:
-    """生成最终报告（模拟）"""
-    # 实际实现会生成 HTML 报告
-    html_file = report_dir / "pipeline_report.html"
-    html_file.write_text("<html><body><h1>Mitochondrial Assembly Report</h1></body></html>")
+    """生成最终报告"""
+    from ..reports import generate_html_report
     
+    # 生成 HTML 报告
+    html_file = report_dir / "pipeline_report.html"
+    try:
+        generate_html_report(state, html_file)
+        logger.info(f"HTML report generated: {html_file}")
+    except Exception as e:
+        logger.error(f"Failed to generate HTML report: {e}")
+        # 回退到简单报告
+        html_file.write_text(f"<html><body><h1>Mito-Forge Pipeline Report</h1><p>Error: {e}</p></body></html>")
+    
+    # 生成 JSON 摘要
     summary_file = report_dir / "summary.json"
-    summary_file.write_text(json.dumps(state, indent=2, default=str))
+    summary_data = {
+        'pipeline_id': state['pipeline_id'],
+        'status': 'completed' if state.get('done') else 'failed',
+        'start_time': state.get('start_time'),
+        'end_time': state.get('end_time'),
+        'duration': state.get('end_time', 0) - state.get('start_time', 0),
+        'stages': {
+            stage: {
+                'status': state['stage_status'].get(stage, 'pending'),
+                'metrics': state['stage_metrics'].get(stage, {}),
+                'files': state['stage_outputs'].get(stage, {}).get('files', {})
+            }
+            for stage in ['qc', 'assembly', 'polish', 'annotation']
+        },
+        'config': state.get('config', {}),
+        'errors': state.get('errors', [])
+    }
+    
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump(summary_data, f, indent=2, default=str, ensure_ascii=False)
     
     return {
         "html": str(html_file),
