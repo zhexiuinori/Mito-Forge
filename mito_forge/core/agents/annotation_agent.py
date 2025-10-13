@@ -550,6 +550,11 @@ class AnnotationAgent(BaseAgent):
         """使用 AI 分析注释结果"""
         logger.info("Analyzing annotation results with AI...")
         
+        # 检查 annotation_results 是否为 None
+        if not annotation_results:
+            logger.warning("Annotation results is None, using default values")
+            annotation_results = {}
+        
         # 准备分析输入
         analysis_input = {
             "annotator": annotation_results.get("annotator", "unknown"),

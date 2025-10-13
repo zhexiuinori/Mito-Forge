@@ -572,6 +572,7 @@ class AssemblyAgent(BaseAgent):
                 exe = find_tool("get_organelle_from_reads.py") or find_tool("getorganelle")
                 if exe:
                     # GetOrganelle 参数: -1 R1 [-2 R2] -o output -F type -t threads
+                    kingdom = inputs.get("kingdom", "animal")
                     organelle_type = "embplant_mt" if kingdom == "plant" else "animal_mt"
                     if reads2_file:
                         # 双端模式

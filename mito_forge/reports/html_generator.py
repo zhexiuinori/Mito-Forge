@@ -75,10 +75,18 @@ def _prepare_template_data(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     
     # 基本信息
+    # 计算 total_time，处理 None 值
+    start_time = state.get('start_time', 0)
+    end_time = state.get('end_time', 0)
+    if start_time and end_time:
+        total_time = end_time - start_time
+    else:
+        total_time = 0
+    
     data = {
         'pipeline_id': state.get('pipeline_id', 'unknown'),
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'total_time': _format_duration(state.get('end_time', 0) - state.get('start_time', 0)),
+        'total_time': _format_duration(total_time),
         'read_type': state.get('config', {}).get('detected_read_type', 'unknown'),
         'kingdom': state.get('config', {}).get('kingdom', 'unknown'),
         'pipeline_status': 'completed' if state.get('done') else 'running'

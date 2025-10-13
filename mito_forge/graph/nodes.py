@@ -1411,12 +1411,21 @@ def _generate_report(state: PipelineState, report_dir: Path) -> Dict[str, Any]:
     
     # 生成 JSON 摘要
     summary_file = report_dir / "summary.json"
+    
+    # 计算 duration，处理 None 值
+    start_time = state.get('start_time', 0)
+    end_time = state.get('end_time', 0)
+    if start_time and end_time:
+        duration = end_time - start_time
+    else:
+        duration = 0
+    
     summary_data = {
         'pipeline_id': state['pipeline_id'],
         'status': 'completed' if state.get('done') else 'failed',
-        'start_time': state.get('start_time'),
-        'end_time': state.get('end_time'),
-        'duration': state.get('end_time', 0) - state.get('start_time', 0),
+        'start_time': start_time,
+        'end_time': end_time,
+        'duration': duration,
         'stages': {
             stage: {
                 'status': state['stage_status'].get(stage, 'pending'),
