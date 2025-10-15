@@ -518,8 +518,8 @@ class SupervisorAgent(BaseAgent):
                 "required": ["error_type", "root_cause", "can_retry", "recommended_action"]
             }
             
-            diagnosis = self.call_llm(
-                diagnosis_prompt,
+            diagnosis = self.generate_llm_json(
+                prompt=diagnosis_prompt,
                 schema=schema,
                 temperature=0.3  # 降低温度以获得更确定的诊断
             )

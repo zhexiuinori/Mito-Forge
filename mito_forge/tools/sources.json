@@ -4,6 +4,10 @@
     "version": "v2.1.5",
     "type": "source_with_makefile",
     "executable": "PMAT2",
+    "requires_env": "pmat",
+    "env_dependencies": {
+      "blast": ">=2.10.0"
+    },
     "assets": {
       "win": {
         "url": "https://codeload.github.com/aiPGAB/PMAT2/zip/refs/tags/v2.1.5"

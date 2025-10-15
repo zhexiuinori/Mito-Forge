@@ -95,6 +95,12 @@ class Config:
         """获取配置值"""
         return self._config.get(key, default)
     
+    def setdefault(self, key: str, default: Any) -> Any:
+        """如果键不存在则设置默认值，并返回该键的值"""
+        if key not in self._config:
+            self._config[key] = default
+        return self._config[key]
+    
     def set(self, key: str, value: Any):
         """设置配置值"""
         # 类型验证

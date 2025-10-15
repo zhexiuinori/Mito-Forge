@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 
 from .base_agent import BaseAgent
 from .types import AgentStatus, StageResult, AgentCapability
+from .exceptions import AssemblyFailedError, ToolNotFoundError
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -267,8 +268,8 @@ class AssemblyAgent(BaseAgent):
 }}"""
         
         try:
-            diagnosis = self.call_llm(
-                diagnosis_prompt,
+            diagnosis = self.generate_llm_json(
+                prompt=diagnosis_prompt,
                 schema={
                     "type": "object",
                     "properties": {
@@ -463,10 +464,23 @@ class AssemblyAgent(BaseAgent):
     
     def run_assembly(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """运行基因组组装"""
-        reads_file = inputs["reads"]
-        reads2_file = inputs.get("reads2")  # 双端测序 R2
+        # 转换为绝对路径并验证文件存在
+        reads_file = Path(inputs["reads"]).resolve()
+        reads2_file = Path(inputs["reads2"]).resolve() if inputs.get("reads2") else None
         read_type = inputs.get("read_type", "illumina")
         assembler = inputs.get("assembler", "spades")
+        
+        # 验证输入文件存在
+        if not reads_file.exists():
+            raise FileNotFoundError(
+                f"Reads file not found: {reads_file}\n"
+                f"Please check the file path is correct and file exists."
+            )
+        if reads2_file and not reads2_file.exists():
+            raise FileNotFoundError(
+                f"Reads2 file not found: {reads2_file}\n"
+                f"Please check the file path is correct and file exists."
+            )
         
         if reads2_file:
             logger.info(f"Running assembly with {assembler} on paired-end data: {reads_file} + {reads2_file}")
@@ -495,31 +509,53 @@ class AssemblyAgent(BaseAgent):
             
             if assembler.lower() in ("spades", "spades.py"):
                 exe = find_tool("spades.py") or find_tool("spades")
+                if not exe:
+                    raise ToolNotFoundError(
+                        "SPAdes not found in system PATH or project tools.\n"
+                        "Install with one of:\n"
+                        "  1. conda install -c bioconda spades\n"
+                        "  2. python -m mito_forge doctor --fix\n"
+                        "  3. Download from: https://github.com/ablab/spades"
+                    )
                 if exe:
+                    # SPAdes 输出子目录
+                    spades_out = asm_dir / "spades_output"
+                    spades_out.mkdir(exist_ok=True)
+                    
                     # 判断单端还是双端
                     if reads2_file:
                         # 双端模式: -1 R1 -2 R2
+                        # 使用相对路径避免路径重复
                         args = ["-1", str(reads_file), "-2", str(reads2_file), 
-                                "-o", str(asm_dir), "-t", str(threads)]
+                                "-o", "spades_output", "-t", str(threads),
+                                "--phred-offset", "33"]  # Illumina 1.8+ 使用 Phred+33
                     else:
                         # 单端模式: -s reads
                         args = ["-s", str(reads_file), 
-                                "-o", str(asm_dir), "-t", str(threads)]
+                                "-o", "spades_output", "-t", str(threads),
+                                "--phred-offset", "33"]
                     rc = self.run_tool(exe, args, cwd=asm_dir)
                     if rc.get("exit_code") == 0:
                         # 解析 SPAdes 输出
                         try:
                             from ...utils.parsers import parse_spades_output
-                            parsed = parse_spades_output(asm_dir)
+                            parsed = parse_spades_output(spades_out)
                             
                             if parsed['success']:
+                                # 复制 contigs.fasta 到主assembly目录便于访问
+                                import shutil
+                                contigs_src = spades_out / "contigs.fasta"
+                                contigs_dst = asm_dir / "contigs.fasta"
+                                if contigs_src.exists():
+                                    shutil.copy2(contigs_src, contigs_dst)
+                                
                                 # 转换为 Agent 期望的格式
                                 return {
                                     "assembler": "spades",
                                     "read_type": read_type,
                                     "kingdom": inputs.get("kingdom", "animal"),
                                     "assembly_time": parsed['metrics'].get('assembly_time_seconds', 0),
-                                    "assembly_file": str(asm_dir / "contigs.fasta"),
+                                    "assembly_file": str(contigs_dst),
                                     "num_contigs": parsed['metrics'].get('num_contigs', 0),
                                     "total_length": parsed['metrics'].get('total_length', 0),
                                     "max_length": parsed['metrics'].get('max_contig_length', 0),
@@ -568,6 +604,48 @@ class AssemblyAgent(BaseAgent):
                                 logger.warning(f"Flye parsing failed: {parsed.get('errors')}")
                         except Exception as e:
                             logger.warning(f"Failed to parse Flye output: {e}")
+            if assembler.lower() == "pmat":
+                # 尝试多种可能的PMAT名称:
+                # 1. pmat2 (sources.json中的工具名)
+                # 2. PMAT (直接可执行文件名)
+                # 3. pmat (系统PATH中可能的名字)
+                # 4. PMAT2 (可能的别名)
+                exe = find_tool("pmat2") or find_tool("PMAT") or find_tool("pmat") or find_tool("PMAT2")
+                if exe:
+                    # PMAT autoMito for HiFi/ONT/CLR data
+                    # Usage: PMAT autoMito -i input -o output -t seqtype -T threads -m
+                    seq_type = inputs.get("seq_type", "hifi")  # hifi/ont/clr
+                    # 映射测序类型
+                    pmat_seqtype = "hifi"
+                    if "ont" in seq_type.lower():
+                        pmat_seqtype = "ont"
+                    elif "clr" in seq_type.lower():
+                        pmat_seqtype = "clr"
+                    
+                    args = ["autoMito", 
+                            "-i", str(reads_file),
+                            "-o", "pmat_output",
+                            "-t", pmat_seqtype,
+                            "-G", "mt",  # 只组装线粒体 (mitochondrion only)
+                            "-T", str(threads),
+                            "-m"]  # Keep data in memory for speed
+                    
+                    rc = self.run_tool(exe, args, cwd=asm_dir)
+                    if rc.get("exit_code") == 0:
+                        # PMAT输出在 pmat_output/gfa_result/PMAT_mt.fa (注意扩展名是.fa不是.fasta)
+                        pmat_out = asm_dir / "pmat_output"
+                        mt_fasta = pmat_out / "gfa_result" / "PMAT_mt.fa"
+                        
+                        if mt_fasta.exists():
+                            return {
+                                "assembly": str(mt_fasta),
+                                "tool": "PMAT",
+                                "exit_code": 0,
+                                "output_dir": str(pmat_out)
+                            }
+                        else:
+                            logger.warning(f"PMAT output not found: {mt_fasta}")
+            
             if assembler.lower() in ("getorganelle", "get_organelle_from_reads.py"):
                 exe = find_tool("get_organelle_from_reads.py") or find_tool("getorganelle")
                 if exe:
@@ -619,10 +697,27 @@ class AssemblyAgent(BaseAgent):
                 f"Please ensure the tool is installed and accessible. "
                 f"Error: {_e}"
             )
+        
+        # 如果没有返回（工具不支持或解析失败），抛出异常
+        raise AssemblyFailedError(
+            f"Assembly with {assembler} failed - no results returned.\n"
+            f"Possible causes:\n"
+            f"1. Tool not properly installed or executable\n"
+            f"2. Input file not found or invalid format\n"
+            f"3. Insufficient resources (memory/disk space)\n"
+            f"4. Tool execution error\n"
+            f"Check logs: {self.workdir}/assembly/{assembler}.stdout.log\n"
+            f"Check errors: {self.workdir}/assembly/{assembler}.stderr.log"
+        )
     
     def analyze_assembly_results(self, assembly_results: Dict[str, Any]) -> Dict[str, Any]:
         """使用 AI 分析组装结果"""
         logger.info("Analyzing assembly results with AI...")
+        
+        # 检查 assembly_results 是否为 None
+        if not assembly_results:
+            logger.warning("Assembly results is None, using default values")
+            assembly_results = {}
         
         # 准备分析输入
         analysis_input = {

@@ -13,6 +13,8 @@ from .commands.agents import agents
 from .commands.qc import qc
 from .commands.assembly import assembly
 from .commands.annotate import annotate
+from .commands.tools_setup import tools_group
+from .commands.resume import resume
 
 class MitoGroup(click.Group):
     """自定义分组：默认仅显示核心命令；--expert 时显示全部命令"""
@@ -83,6 +85,8 @@ cli.add_command(agents, name="agents")
 cli.add_command(qc, name="qc")
 cli.add_command(assembly, name="assembly")
 cli.add_command(annotate, name="annotate")
+cli.add_command(tools_group, name="tools")
+cli.add_command(resume, name="resume")
 
 # 添加快捷命令别名
 @cli.command()
@@ -152,8 +156,17 @@ def _menu(ctx):
         choice = click.prompt(t["choose"], type=int, default=1)
 
         if choice == 1:
+            # 使用重构的pipeline交互流程
+            from .main_menu_refactored import run_pipeline_interactive
+            run_pipeline_interactive(ctx, lang, t, pipeline)
+            continue  # 返回主菜单
+            
+            # 以下是旧代码(已被上面替代)
+            """
+            OLD_CODE_START_MARKER
+        if choice == 1_OLD:
             # 运行流水线：最小参数引导；可选“工具选择”
-            reads = click.prompt(t["prompt_reads"], default="test.fastq")
+            reads = click.prompt(t["prompt_reads"], default="test.fastq").strip()
             
             # 双端测序支持：自动检测或手动输入
             reads2 = None
@@ -168,13 +181,13 @@ def _menu(ctx):
                     reads2 = auto_r2
                 else:
                     if click.confirm(("手动输入 R2 文件?" if lang != "en" else "Manually input R2?"), default=False):
-                        reads2 = click.prompt(("R2 文件路径" if lang != "en" else "R2 file path"))
+                        reads2 = click.prompt(("R2 文件路径" if lang != "en" else "R2 file path")).strip()
             else:
                 if click.confirm(("是否为双端测序?" if lang != "en" else "Paired-end sequencing?"), default=False):
-                    reads2 = click.prompt(("R2 文件路径" if lang != "en" else "R2 file path"))
+                    reads2 = click.prompt(("R2 文件路径" if lang != "en" else "R2 file path")).strip()
             
-            output = click.prompt(t["prompt_output"], default="user_analysis_results")
-            kingdom = click.prompt(t["prompt_kingdom"], default="animal")
+            output = click.prompt(t["prompt_output"], default="user_analysis_results").strip()
+            kingdom = click.prompt(t["prompt_kingdom"], type=click.Choice(["animal", "plant"]), default="animal")
             interactive = click.confirm(t["prompt_interactive"], default=True)
             threads = click.prompt(t["prompt_threads"], type=int, default=8)
 
@@ -185,6 +198,7 @@ def _menu(ctx):
             kwargs = {
                 "reads": reads,
                 "reads2": reads2,  # 添加 R2 支持
+                "long_reads": None,  # 初始化为None，hybrid模式会更新
                 "output": output,
                 "kingdom": kingdom,
                 "threads": threads,
@@ -198,6 +212,21 @@ def _menu(ctx):
             if choose_tools:
                 # 选择测序类型与组装器（按 seq-type/kingdom 动态过滤常用集合，覆盖你的清单）
                 seqtype = click.prompt(("测序类型 (auto/illumina/ont/pacbio-hifi/pacbio-clr/hybrid)" if lang != "en" else "Seq type (auto/illumina/ont/pacbio-hifi/pacbio-clr/hybrid)"), default="auto").strip().lower()
+                # 支持简写: hifi -> pacbio-hifi, clr -> pacbio-clr
+                if seqtype == "hifi":
+                    seqtype = "pacbio-hifi"
+                elif seqtype == "clr":
+                    seqtype = "pacbio-clr"
+                
+                # Hybrid模式需要额外的长reads输入
+                long_reads = None
+                if seqtype == "hybrid":
+                    click.echo(("💡 混合测序模式需要短reads和长reads" if lang != "en" else "💡 Hybrid mode requires both short and long reads"))
+                    click.echo(("  已输入短reads: {}".format(reads) if lang != "en" else "  Short reads: {}".format(reads)))
+                    if reads2:
+                        click.echo(("  短reads R2: {}".format(reads2) if lang != "en" else "  Short reads R2: {}".format(reads2)))
+                    long_reads = click.prompt(("  请输入长reads路径 (ONT/PacBio)" if lang != "en" else "  Long reads path (ONT/PacBio)")).strip()
+                
                 kg_norm = (kingdom or "animal").strip().lower()
 
                 if seqtype in ("illumina", "auto"):
@@ -258,6 +287,10 @@ def _menu(ctx):
                     # 使用配置文件运行，并传递测序类型
                     kwargs["config_file"] = str(plan_path)
                     kwargs["seq_type"] = seqtype
+                    
+                    # 如果是hybrid模式，传递long_reads
+                    if seqtype == "hybrid" and long_reads:
+                        kwargs["long_reads"] = long_reads
 
                     # 明确反馈选择结果与配置文件位置
                     click.echo(("✅ 已选择工具: " if lang != "en" else "✅ Selected tools: ") + f"assembler={assembler}" + (f", qc={qc_choice}" if qc_choice else ""))
@@ -267,6 +300,8 @@ def _menu(ctx):
                     click.echo(("⚠️ 写入工具计划失败，将按默认工具运行: " if lang != "en" else "⚠️ Failed to write tool plan, running with defaults: ") + f"{_e}")
 
             ctx.invoke(pipeline, **kwargs)
+            """
+            # OLD_CODE_END_MARKER
         elif choice == 2:
             # 智能体管理
             detailed = click.confirm("显示详细信息?", default=False)

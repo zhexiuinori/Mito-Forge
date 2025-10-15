@@ -260,16 +260,6 @@ def qc_node(state: PipelineState) -> PipelineState:
                     workdir=qc_dir
                 )
                 _res = qc_agent.execute_task(task)
-                
-                # 立即检查Agent执行状态,避免后续代码抛出异常
-                from ..core.agents.types import AgentStatus
-                if _res.status == AgentStatus.FAILED:
-                    error_msg = str(_res.errors[0]) if _res.errors else "QC analysis failed"
-                    logger.error(f"🛑 QC Agent failed, terminating pipeline: {error_msg}")
-                    fail_stage(state, "qc", error_msg)
-                    state["route"] = RouteDecision.TERMINATE
-                    return state
-                
                 _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
                 merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
                 # expert 追加复核一轮（第二次调用），合并结果
@@ -305,7 +295,6 @@ def qc_node(state: PipelineState) -> PipelineState:
                 ai_file = str(qc_dir / "qc_ai_analysis.json")
                 with open(ai_file, "w", encoding="utf-8") as f:
                     json.dump(merged_ai, f, ensure_ascii=False, indent=2)
-                    
         except Exception as _e:
             logger.warning(f"QC LLM评估失败，使用模拟结果: {_e}")
         
@@ -431,16 +420,6 @@ def assembly_node(state: PipelineState) -> PipelineState:
                     workdir=assembly_dir
                 )
                 _res = asm_agent.execute_task(task)
-                
-                # 立即检查Agent执行状态
-                from ..core.agents.types import AgentStatus
-                if _res.status == AgentStatus.FAILED:
-                    error_msg = str(_res.errors[0]) if _res.errors else "Assembly failed"
-                    logger.error(f"🛑 Assembly Agent failed, terminating pipeline: {error_msg}")
-                    fail_stage(state, "assembly", error_msg)
-                    state["route"] = RouteDecision.TERMINATE
-                    return state
-                
                 _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
                 merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
                 # expert 追加一轮复核
@@ -479,7 +458,6 @@ def assembly_node(state: PipelineState) -> PipelineState:
                 asm_ai_file = str(assembly_dir / "assembly_ai_analysis.json")
                 with open(asm_ai_file, "w", encoding="utf-8") as f:
                     json.dump(merged_ai, f, ensure_ascii=False, indent=2)
-                    
         except Exception as _e:
             logger.warning(f"Assembly LLM评估失败，使用模拟结果: {_e}")
         
@@ -564,21 +542,11 @@ def annotation_node(state: PipelineState) -> PipelineState:
                 task = TaskSpec(
                     task_id="annotation_pipeline",
                     agent_type="annotation",
-                    inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2), "interactive": config.get("interactive", False)},
+                    inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2)},
                     config=base_cfg,
                     workdir=annotation_dir
                 )
                 _res = ann_agent.execute_task(task)
-                
-                # 立即检查Agent执行状态
-                from ..core.agents.types import AgentStatus
-                if _res.status == AgentStatus.FAILED:
-                    error_msg = str(_res.errors[0]) if _res.errors else "Annotation failed"
-                    logger.error(f"🛑 Annotation Agent failed, terminating pipeline: {error_msg}")
-                    fail_stage(state, "annotation", error_msg)
-                    state["route"] = RouteDecision.TERMINATE
-                    return state
-                
                 _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
                 merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
                 # expert 再进行一轮复核
@@ -587,7 +555,7 @@ def annotation_node(state: PipelineState) -> PipelineState:
                     review_task = TaskSpec(
                         task_id="annotation_pipeline_review",
                         agent_type="annotation",
-                        inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2), "interactive": config.get("interactive", False), "review": True},
+                        inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2), "review": True},
                         config=review_cfg,
                         workdir=annotation_dir
                     )
@@ -606,7 +574,6 @@ def annotation_node(state: PipelineState) -> PipelineState:
                 ann_ai_file = str(annotation_dir / "annotation_ai_analysis.json")
                 with open(ann_ai_file, "w", encoding="utf-8") as f:
                     json.dump(merged_ai, f, ensure_ascii=False, indent=2)
-                    
         except Exception as _e:
             logger.warning(f"Annotation LLM评估失败，使用模拟结果: {_e}")
         

@@ -1,0 +1,9 @@
+name: mito-forge-medaka
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - python=3.8
+  - medaka>=1.7.0
+  - minimap2
+  - samtools

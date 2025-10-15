@@ -13,8 +13,17 @@ class GitHubDownloader:
     - 支持 http/https 与 file:// 直链下载
     - 可选 sha256 校验
     - 自动解压 zip 与 tar.gz
+    - 支持镜像站自动切换
     说明：本版本不解析 GitHub Release 列表，仅支持 sources.json 提供的 assets[plat].url。
     """
+    
+    # GitHub 镜像站列表（按优先级排序）
+    GITHUB_MIRRORS = [
+        "",  # 首先尝试直连
+        "https://ghproxy.com/",
+        "https://ghproxy.net/",
+        "https://mirror.ghproxy.com/",
+    ]
     @staticmethod
     def _sha256(p: Path) -> str:
         h = hashlib.sha256()
@@ -33,10 +42,59 @@ class GitHubDownloader:
                 raise FileNotFoundError(f"file url not found: {src}")
             shutil.copyfile(src, dest_file)
             return
-        # http/https
-        req = Request(url, headers={"User-Agent": "Mito-Forge/1.0"})
-        with urlopen(req) as resp, open(dest_file, "wb") as out:
-            shutil.copyfileobj(resp, out)
+        
+        # http/https - 尝试多个镜像
+        last_error = None
+        for mirror in GitHubDownloader.GITHUB_MIRRORS:
+            try:
+                # 构造下载 URL
+                if mirror and url.startswith("https://github.com/"):
+                    download_url = mirror + url
+                else:
+                    download_url = url
+                
+                req = Request(download_url, headers={"User-Agent": "Mito-Forge/1.0"})
+                with urlopen(req, timeout=600) as resp, open(dest_file, "wb") as out:
+                    # 获取文件大小
+                    total_size = int(resp.headers.get('Content-Length', 0))
+                    downloaded = 0
+                    chunk_size = 8192
+                    
+                    # 分块下载并显示进度
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        # 显示进度
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            mb_downloaded = downloaded / (1024 * 1024)
+                            mb_total = total_size / (1024 * 1024)
+                            print(f"\rDownloading: {mb_downloaded:.1f}MB / {mb_total:.1f}MB ({percent:.1f}%)", end='', flush=True)
+                        else:
+                            mb_downloaded = downloaded / (1024 * 1024)
+                            print(f"\rDownloading: {mb_downloaded:.1f}MB", end='', flush=True)
+                    
+                    print()  # 换行
+                
+                # 下载成功
+                if mirror:
+                    print(f"Successfully downloaded via mirror: {mirror}")
+                return
+                
+            except Exception as e:
+                last_error = e
+                if mirror:
+                    print(f"Mirror {mirror} failed: {e}")
+                else:
+                    print(f"Direct download failed: {e}, trying mirrors...")
+                continue
+        
+        # 所有镜像都失败
+        raise last_error or Exception("All download attempts failed")
 
     @staticmethod
     def _extract(archive: Path, dest_dir: Path) -> None:

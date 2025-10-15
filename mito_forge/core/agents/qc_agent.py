@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 
 from .base_agent import BaseAgent
 from .types import AgentStatus, StageResult, AgentCapability
+from .exceptions import QCFailedError, ToolNotFoundError
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -204,8 +205,8 @@ class QCAgent(BaseAgent):
 }}"""
         
         try:
-            diagnosis = self.call_llm(
-                diagnosis_prompt,
+            diagnosis = self.generate_llm_json(
+                prompt=diagnosis_prompt,
                 schema={
                     "type": "object",
                     "properties": {
@@ -414,7 +415,9 @@ class QCAgent(BaseAgent):
                 outputs={
                     "qc_results": qc_results,
                     "ai_analysis": ai_analysis,
-                    "quality_score": ai_analysis.get("quality_assessment", {}).get("overall_score", 0.7)
+                    "quality_score": ai_analysis.get("quality_assessment", {}).get("overall_score", 0.7),
+                    "reads": inputs["reads"],
+                    "reads2": inputs.get("reads2")
                 },
                 metrics={
                     "quality_score": ai_analysis.get("quality_assessment", {}).get("overall_score", 0.7),
@@ -509,26 +512,18 @@ class QCAgent(BaseAgent):
                             result = result_r1
                             return result
                         else:
-                            logger.warning(f"FastQC output zip not found, using fallback data")
+                            raise QCFailedError(
+                                f"FastQC output not found: {qc_dir}\n"
+                                f"FastQC may have failed to execute properly.\n"
+                                f"Check logs: {qc_dir}/fastqc.stderr.log\n"
+                                f"Ensure FastQC is properly installed: conda install -c bioconda fastqc"
+                            )
                     except Exception as e:
-                        logger.warning(f"Failed to parse FastQC output: {e}, using fallback data")
-                    
-                    # Fallback: 返回基础统计
-                    return {
-                        "filename": Path(reads_file).name,
-                        "read_type": read_type,
-                        "total_reads": 1000000,
-                        "total_bases": 150000000,
-                        "avg_length": 150,
-                        "avg_quality": 30.0,
-                        "q20_percent": 90.0,
-                        "q30_percent": 85.0,
-                        "gc_content": 40.0,
-                        "min_length": 35,
-                        "max_length": 151,
-                        "n50": 150,
-                        "detected_issues": []
-                    }
+                        raise QCFailedError(
+                            f"Failed to parse FastQC output: {e}\n"
+                            f"Output directory: {qc_dir}\n"
+                            f"Check if FastQC completed successfully."
+                        )
             if nanoplot_exists:
                 exe = "NanoPlot" if shutil.which("NanoPlot") else "nanoplot"
                 rc = self.run_tool(exe, ["--fastq", str(reads_file), "-o", str(qc_dir)], cwd=qc_dir)

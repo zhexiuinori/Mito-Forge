@@ -1,0 +1,9 @@
+name: mito-forge-getorganelle
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - python=3.8
+  - getorganelle>=1.7.0
+  - bowtie2
+  - blast

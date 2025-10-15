@@ -35,8 +35,9 @@ def build_pipeline_graph():
     graph.set_entry_point("supervisor")
     
     # 添加边
-    graph.add_edge("supervisor", "qc")
-    graph.add_edge("qc", "assembly")
+    # 注意: supervisor, qc, assembly 使用条件边(在下面定义),不需要无条件边
+    # graph.add_edge("supervisor", "qc")  # 删除,使用条件边
+    # graph.add_edge("qc", "assembly")  # 删除,使用条件边
     # assembly -> polish 条件边（在下面定义）
     graph.add_edge("polish", "annotation")
     graph.add_edge("annotation", "report")
@@ -47,7 +48,8 @@ def build_pipeline_graph():
         "supervisor",
         supervisor_route_decider,
         {
-            "continue": "qc",
+            "qc": "qc",  # 正常流程:进入QC
+            "assembly": "assembly",  # 跳过QC:直接进入Assembly
             "terminate": END
         }
     )
@@ -123,21 +125,37 @@ def build_pipeline_graph():
     #     }
     # }
 
-def supervisor_route_decider(state: PipelineState) -> Literal["continue", "terminate"]:
-    """主管节点路由决策"""
-    if state["route"] == "terminate":
+def supervisor_route_decider(state: PipelineState) -> Literal["qc", "assembly", "terminate"]:
+    """主管节点路由决策 - 根据skip_qc决定下一阶段"""
+    from .state import RouteDecision
+    route = state["route"]
+    
+    # 处理枚举类型
+    route_str = route.value if hasattr(route, 'value') else str(route)
+    
+    if route_str == "terminate":
         return "terminate"
-    return "continue"
+    
+    # 根据config决定下一个阶段
+    config = state["config"]
+    if config.get("skip_qc", False):
+        return "assembly"  # 跳过QC,直接进入Assembly
+    else:
+        return "qc"
 
 def assembly_route_decider(state: PipelineState) -> Literal["polish", "skip_polish", "retry", "fallback", "terminate"]:
     """组装节点路由决策 - 决定是否需要抛光"""
+    from .state import RouteDecision
     route = state["route"]
     
-    if route == "terminate":
+    # 处理枚举类型
+    route_str = route.value if hasattr(route, 'value') else str(route)
+    
+    if route_str == "terminate":
         return "terminate"
-    elif route == "retry":
+    elif route_str == "retry":
         return "retry"
-    elif route == "fallback":
+    elif route_str == "fallback":
         return "fallback"
     
     # 检查是否需要抛光
@@ -151,13 +169,17 @@ def assembly_route_decider(state: PipelineState) -> Literal["polish", "skip_poli
 
 def stage_route_decider(state: PipelineState) -> Literal["continue", "retry", "fallback", "terminate"]:
     """阶段节点路由决策"""
+    from .state import RouteDecision
     route = state["route"]
     
-    if route == "terminate":
+    # 处理枚举类型
+    route_str = route.value if hasattr(route, 'value') else str(route)
+    
+    if route_str == "terminate":
         return "terminate"
-    elif route == "retry":
+    elif route_str == "retry":
         return "retry"
-    elif route == "fallback":
+    elif route_str == "fallback":
         return "fallback"
     else:
         return "continue"
@@ -187,7 +209,18 @@ def run_pipeline_sync(
     }
     
     # 使用 LangGraph 执行流水线
-    final_state = compiled_graph.invoke(state, config=run_config)
+    try:
+        final_state = compiled_graph.invoke(state, config=run_config)
+    except KeyError as e:
+        # LangGraph 路由错误
+        import logging
+        import traceback
+        logger = logging.getLogger(__name__)
+        logger.error(f"Graph routing error: {e}")
+        logger.error(f"Current state route: {state.get('route')}")
+        logger.error(f"Current stage: {state.get('current_stage')}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
+        raise RuntimeError(f"Pipeline routing error at stage {state.get('current_stage')}: {e}")
     
     return final_state
 

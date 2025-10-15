@@ -52,6 +52,7 @@ def _help(key: str) -> str:
 @click.command()
 @click.option("--reads", type=click.Path(exists=True), required=True, help=_help("pl_opt_reads"))
 @click.option("--reads2", type=click.Path(exists=True), required=False, help=_help("pl_opt_reads2"))
+@click.option("--long-reads", type=click.Path(exists=True), required=False, help="Long reads for hybrid assembly (ONT/PacBio)")
 @click.option("--output", "-o", type=click.Path(), default="results", help=_help("pl_opt_output"))
 @click.option("--threads", "-t", type=int, default=8, help=_help("pl_opt_threads"))
 @click.option("--kingdom", type=click.Choice(["animal", "plant"]), default="animal", help=_help("pl_opt_kingdom"))
@@ -70,7 +71,7 @@ def _help(key: str) -> str:
     envvar="MITO_SEQ_TYPE",
     help="选择测序类型以匹配合适的工具链；可用 auto/illumina/ont/pacbio-hifi/pacbio-clr/hybrid（也可用环境变量 MITO_SEQ_TYPE 覆盖）",
 )
-def pipeline(reads, reads2, output, threads, kingdom, resume, checkpoint, config_file, verbose, interactive, lang, detail_level, seq_type):
+def pipeline(reads, reads2, long_reads, output, threads, kingdom, resume, checkpoint, config_file, verbose, interactive, lang, detail_level, seq_type):
     """
     运行完整的线粒体基因组组装流水线 / Run the complete mitochondrial genome assembly pipeline
 
@@ -123,7 +124,12 @@ def pipeline(reads, reads2, output, threads, kingdom, resume, checkpoint, config
             # 添加双端测序支持
             if reads2:
                 inputs["reads2"] = str(reads2)
-            else:
+            
+            # 添加长reads支持(hybrid模式)
+            if long_reads:
+                inputs["long_reads"] = str(long_reads)
+            
+            if not reads2 and not long_reads:
                 # 尝试自动检测双端数据
                 from ...utils.paired_end_utils import detect_paired_end
                 auto_r2 = detect_paired_end(str(reads))
@@ -134,7 +140,11 @@ def pipeline(reads, reads2, output, threads, kingdom, resume, checkpoint, config
             config = {
                 "threads": threads,
                 "kingdom": kingdom,  # 同时也放在config中作为备份
-                "output_dir": str(output_dir)
+                "output_dir": str(output_dir),
+                "skip_qc": False,  # 默认不跳过QC,后续根据tool_plan更新
+                "skip_annotation": False,
+                "generate_report": True,
+                "interactive": interactive
             }
             # 将工具计划注入配置，供后续各 Agent/调度使用
             try:
@@ -161,6 +171,12 @@ def pipeline(reads, reads2, output, threads, kingdom, resume, checkpoint, config
                 with open(config_file) as f:
                     file_config = json.load(f)
                     config.update(file_config)
+                    
+                # 如果tool_plan中没有qc,设置skip_qc=True
+                tool_plan = file_config.get("tool_plan", {})
+                if "qc" not in tool_plan or not tool_plan.get("qc"):
+                    config["skip_qc"] = True
+                    console.print("[yellow]💡 未选择QC工具,将跳过QC阶段[/yellow]")
             
             # 运行流水线 - 使用简单的状态显示避免与日志混合
             console.print(f"🔄 [bold blue]{_t(lang, 'start')}[/bold blue]")

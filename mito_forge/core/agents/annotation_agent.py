@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 
 from .base_agent import BaseAgent
 from .types import AgentStatus, StageResult, AgentCapability
+from .exceptions import AnnotationFailedError, ToolNotFoundError
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -229,8 +230,8 @@ class AnnotationAgent(BaseAgent):
 }}"""
         
         try:
-            diagnosis = self.call_llm(
-                diagnosis_prompt,
+            diagnosis = self.generate_llm_json(
+                prompt=diagnosis_prompt,
                 schema={
                     "type": "object",
                     "properties": {
@@ -474,6 +475,36 @@ class AnnotationAgent(BaseAgent):
         assembly_file = inputs["assembly"]
         kingdom = inputs.get("kingdom", "animal")
         annotator = inputs.get("annotator", "mitos")
+        interactive = inputs.get("interactive", False)
+        
+        # Plant + GeSeq路径
+        if kingdom == "plant" and annotator == "geseq":
+            if not interactive:
+                raise AnnotationFailedError(
+                    "Plant annotation with GeSeq requires interactive mode.\n"
+                    "GeSeq is a web-based service that needs manual operation.\n\n"
+                    "Run with: mito-forge pipeline --kingdom plant --interactive\n\n"
+                    "Alternative: Install CPGAVAS2 for local annotation."
+                )
+            
+            # 触发GeSeq向导
+            from ...utils.geseq_guide import GeSeqGuide
+            from .exceptions import PipelinePausedException
+            
+            guide = GeSeqGuide(
+                assembly_path=Path(assembly_file),
+                kingdom=kingdom,
+                workdir=self.workdir or Path(".")
+            )
+            guide.display_instructions()
+            guide.open_browser()
+            
+            # 抛出暂停异常
+            raise PipelinePausedException(
+                task_id=guide.task_id,
+                message=f"Pipeline paused for GeSeq annotation.\n"
+                        f"Resume with: mito-forge resume {guide.task_id} --annotation <result.gbk>"
+            )
         
         logger.info(f"Running annotation with {annotator} on {assembly_file}")
         
@@ -500,10 +531,19 @@ class AnnotationAgent(BaseAgent):
                 return None
             
             if annotator.lower() == "mitos":
+                # MITOS只支持动物(Metazoan)线粒体,不支持植物
+                if kingdom != "animal":
+                    raise ToolNotFoundError(
+                        f"MITOS only supports animal mitochondrial genomes.\n"
+                        f"For plant annotation, use GeSeq (web-based) in interactive mode:\n"
+                        f"  mito-forge pipeline --kingdom plant --interactive\n"
+                        f"Or install CPGAVAS2 for local annotation."
+                    )
+                
                 exe = find_tool("runmitos.py") or find_tool("mitos")
                 if exe:
                     # MITOS 参数: --input assembly.fasta --code 2 --outdir output
-                    genetic_code = 2 if kingdom == "animal" else 1
+                    genetic_code = 2  # 动物线粒体遗传密码
                     args = [
                         "--input", str(assembly_file),
                         "--code", str(genetic_code),
@@ -545,6 +585,17 @@ class AnnotationAgent(BaseAgent):
                 f"Please ensure the tool is installed and accessible. "
                 f"Error: {_e}"
             )
+        
+        # 如果没有返回（工具不支持或解析失败），抛出异常
+        raise AnnotationFailedError(
+            f"Annotation with {annotator} failed - no results returned.\n"
+            f"Possible causes:\n"
+            f"1. Annotator tool ({annotator}) not properly installed\n"
+            f"2. Input assembly file is invalid or empty\n"
+            f"3. Tool execution error\n"
+            f"Install MITOS: conda install -c bioconda mitos\n"
+            f"Check logs: {self.workdir}/annotation/{annotator}.stdout.log"
+        )
     
     def analyze_annotation_results(self, annotation_results: Dict[str, Any]) -> Dict[str, Any]:
         """使用 AI 分析注释结果"""

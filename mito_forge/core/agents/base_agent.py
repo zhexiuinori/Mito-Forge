@@ -189,6 +189,30 @@ class BaseAgent(abc.ABC):
 
         cmd = [resolved] + list(args)
         env_all = os.environ.copy()
+        
+        # 检查工具是否需要conda环境
+        tool_name = Path(exe).stem
+        try:
+            from ...utils.tool_env_manager import ToolEnvironmentManager
+            env_mgr = ToolEnvironmentManager()
+            
+            # 获取工具需要的环境名称
+            required_env = env_mgr.get_tool_required_env(tool_name)
+            
+            if required_env:
+                # 检查环境是否存在
+                if env_mgr.env_exists(required_env):
+                    # 注入环境的bin路径到PATH
+                    env_bin_path = env_mgr.get_env_bin_path(required_env)
+                    if env_bin_path:
+                        env_all["PATH"] = f"{env_bin_path}:{env_all.get('PATH', '')}"
+                        logger.info(f"Using conda environment: mito-forge-{required_env}")
+                else:
+                    logger.warning(f"Tool {tool_name} requires environment '{required_env}' but it's not installed")
+                    logger.warning(f"Run: mito-forge doctor  # to setup environment")
+        except Exception as e:
+            logger.debug(f"Failed to setup tool environment: {e}")
+        
         if env:
             env_all.update(env)
         start = time.time()

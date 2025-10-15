@@ -32,12 +32,49 @@ class ToolsManager:
         return self.bin_root / name / version
 
     def where(self, name: str, version: Optional[str] = None) -> Optional[Path]:
-        cfg = self.get_tool_config(name)
-        ver = version or cfg.get("version", "latest")
-        d = self._target_dir(name, ver)
-        if not d.exists():
+        # 尝试从sources.json获取配置
+        try:
+            cfg = self.get_tool_config(name)
+            ver = version or cfg.get("version", "latest")
+            d = self._target_dir(name, ver)
+            if not d.exists():
+                # 配置存在但目录不存在，尝试fallback扫描
+                pass
+            else:
+                # 首选标准启动器位置
+                exe = d / (f"{name}.cmd" if os.name == "nt" else name)
+                if exe.exists():
+                    return exe
+        except KeyError:
+            # sources.json中没有配置，使用fallback扫描
+            pass
+        
+        # Fallback: 直接扫描tools/bin目录查找工具
+        # 支持多种目录结构: name/version/name, name/*/name, name/*/*/name.py 等
+        d = None
+        if self.bin_root.exists():
+            candidates = []
+            # 查找启动器: tools/bin/{name}/{version}/{name}
+            candidates.extend(self.bin_root.glob(f"{name}/*/{name}"))
+            # 查找Python脚本: tools/bin/{name}/{version}/{name}.py
+            candidates.extend(self.bin_root.glob(f"{name}/*/{name}.py"))
+            # 查找嵌套结构: tools/bin/{name}/{version}/*/bin/{name}
+            candidates.extend(self.bin_root.glob(f"{name}/*/*/{name}"))
+            candidates.extend(self.bin_root.glob(f"{name}/*/*/*/{name}.py"))
+            
+            for candidate in candidates:
+                if candidate.exists() and (os.access(candidate, os.X_OK) or candidate.suffix == '.py'):
+                    return candidate
+            
+            # 如果找到了目录但没有启动器，使用第一个版本目录
+            version_dirs = list(self.bin_root.glob(f"{name}/*"))
+            if version_dirs:
+                d = sorted(version_dirs)[-1]  # 使用最新版本
+        
+        if not d or not d.exists():
             return None
-        # 首选标准启动器位置
+        
+        # 使用原有逻辑继续处理
         exe = d / (f"{name}.cmd" if os.name == "nt" else name)
         if exe.exists():
             return exe
@@ -108,56 +145,182 @@ class ToolsManager:
             return str(p) if p else str(target)
         # 下载并解压
         if asset_url:
-            GitHubDownloader.download(cfg["repo"], ver, asset_url, target, sha256=sha256)
+            try:
+                GitHubDownloader.download(cfg["repo"], ver, asset_url, target, sha256=sha256)
+                print(f"✅ {name} 下载完成")
+            except Exception as e:
+                raise RuntimeError(f"下载失败: {e}\n可能原因:\n1. 网络问题\n2. URL无效\n3. 权限问题\n建议: 检查网络连接或使用conda安装")
         else:
             raise RuntimeError("asset url is required in sources.json for current platform; pattern-only not supported yet")
-        # 构建（仅 Linux）：若解压根目录含 Makefile，则并行构建，并定位可执行产物
+        
+        # 验证下载是否成功
+        if not list(target.iterdir()):
+            raise RuntimeError(f"下载目录为空,下载可能失败了: {target}\n建议使用conda安装或手动下载")
+        
+        # 确定构建根目录
         build_root = None
         try:
             dirs = [p for p in target.iterdir() if p.is_dir() and p.name != "__MACOSX"]
             build_root = dirs[0] if dirs else target
         except Exception:
             build_root = target
+        
+        # 获取工具类型和可执行文件路径
+        tool_type = cfg.get("type", "auto")
+        explicit_exe = cfg.get("executable")
         run_target_rel = name
+        
+        # 根据工具类型处理
         if os.name != "nt":
-            mk = build_root / "Makefile"
-            if mk.exists():
-                try:
-                    jobs = os.cpu_count() or 1
-                    subprocess.run(["make", f"-j{jobs}"], cwd=str(build_root), check=True)
-                except Exception:
-                    # 构建失败不阻断安装流程
-                    pass
-            # 寻找构建产物作为主可执行（优先 pmat2/PMAT2）
-            candidates = ["pmat2", "PMAT2"]
-            found = None
-            for c in candidates:
-                pth = build_root / c
-                if pth.exists() and pth.is_file():
-                    found = pth
-                    break
-            if not found:
-                try:
-                    for pth in build_root.iterdir():
-                        if pth.is_file() and os.access(pth, os.X_OK):
-                            found = pth
-                            break
-                except Exception:
-                    pass
-            if found:
-                try:
-                    run_target_rel = os.path.relpath(str(found), str(target))
-                except Exception:
-                    run_target_rel = found.name
+            if tool_type == "source_with_makefile":
+                # 源码需要编译
+                mk = build_root / "Makefile"
+                if mk.exists():
+                    try:
+                        print(f"Building {name} with make...")
+                        jobs = os.cpu_count() or 1
+                        subprocess.run(["make", f"-j{jobs}"], cwd=str(build_root), check=True)
+                        print(f"Build complete: {name}")
+                    except Exception as e:
+                        print(f"Build failed: {e}")
+                        pass
+            elif tool_type == "python_package":
+                # Python包需要编译/安装 (如unicycler有C++扩展)
+                setup_py = build_root / "setup.py"
+                makefile = build_root / "Makefile"
+                
+                if setup_py.exists():
+                    try:
+                        print(f"Building Python package {name}...")
+                        # 尝试编译扩展 (如果有)
+                        result = subprocess.run(
+                            ["python", "setup.py", "build_ext", "--inplace"],
+                            cwd=str(build_root),
+                            capture_output=True,
+                            text=True
+                        )
+                        if result.returncode == 0:
+                            print(f"  ✅ Python扩展编译成功")
+                        else:
+                            # 编译失败不是致命问题,可能不需要编译
+                            print(f"  ℹ️  Python扩展编译跳过 (可能不需要)")
+                    except Exception as e:
+                        print(f"  ⚠️  编译过程出错: {e}")
+                
+                # 如果有Makefile,也尝试make
+                if makefile.exists():
+                    try:
+                        print(f"  Running make for {name}...")
+                        jobs = os.cpu_count() or 1
+                        subprocess.run(["make", f"-j{jobs}"], cwd=str(build_root), check=True)
+                        print(f"  ✅ Make编译成功")
+                    except Exception as e:
+                        print(f"  ⚠️  Make编译失败: {e}")
+                        
+            elif tool_type == "java_jar":
+                # Java JAR 文件，创建启动脚本
+                jar_file = None
+                for f in target.iterdir():
+                    if f.suffix == '.jar':
+                        jar_file = f
+                        break
+                if jar_file:
+                    try:
+                        run_target_rel = jar_file.name
+                    except Exception:
+                        pass
+            
+            # 查找可执行文件
+            if explicit_exe:
+                # 使用配置中指定的路径
+                exe_path = target / explicit_exe
+                if not exe_path.exists():
+                    # 尝试在 build_root 下查找
+                    exe_path = build_root / explicit_exe
+                if exe_path.exists():
+                    # 确保可执行权限
+                    try:
+                        import stat
+                        current_mode = exe_path.stat().st_mode
+                        exe_path.chmod(current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    except Exception:
+                        pass
+                    try:
+                        run_target_rel = os.path.relpath(str(exe_path), str(target))
+                    except Exception:
+                        run_target_rel = exe_path.name
+            else:
+                # 自动查找（兼容旧逻辑）
+                candidates = [name, name.upper(), name.lower()]
+                found = None
+                for c in candidates:
+                    pth = build_root / c
+                    if pth.exists() and pth.is_file():
+                        found = pth
+                        break
+                if not found:
+                    try:
+                        for pth in build_root.iterdir():
+                            if pth.is_file() and os.access(pth, os.X_OK):
+                                found = pth
+                                break
+                    except Exception:
+                        pass
+                if found:
+                    # 确保可执行权限
+                    try:
+                        import stat
+                        current_mode = found.stat().st_mode
+                        found.chmod(current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    except Exception:
+                        pass
+                    try:
+                        run_target_rel = os.path.relpath(str(found), str(target))
+                    except Exception:
+                        run_target_rel = found.name
 
         # 规范化主可执行（Windows: .cmd 启动器；POSIX: chmod +x）
         exe = target / (f"{name}.cmd" if os.name == "nt" else name)
         if not exe.exists():
-            # 若解压后没有主名，创建启动器/软链接逻辑（此处简单占位）
+            # 若解压后没有主名，创建启动器/软链接逻辑
             if os.name == "nt":
                 exe.write_text(f"@echo off\r\n\"%~dp0\\{name}.exe\" %*\r\n", encoding="utf-8")
             else:
-                exe.write_text("#!/usr/bin/env bash\nexec \"$(dirname \"$0\")/%s\" \"$@\"\n" % run_target_rel, encoding="utf-8")
+                # 对于 Java JAR，创建 java -jar 启动器
+                if tool_type == "java_jar":
+                    exe.write_text("#!/usr/bin/env bash\nexec java -jar \"$(dirname \"$0\")/%s\" \"$@\"\n" % run_target_rel, encoding="utf-8")
+                else:
+                    exe.write_text("#!/usr/bin/env bash\nexec \"$(dirname \"$0\")/%s\" \"$@\"\n" % run_target_rel, encoding="utf-8")
                 import stat
-                exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+                exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        
+        # 验证工具是否真的可用
+        if exe.exists():
+            try:
+                # 尝试运行 --version 或 --help 验证
+                test_result = subprocess.run(
+                    [str(exe), "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if test_result.returncode == 0:
+                    print(f"✅ {name} 安装成功并可执行")
+                else:
+                    # --version失败,尝试--help
+                    test_result = subprocess.run(
+                        [str(exe), "--help"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if test_result.returncode == 0 or "usage" in test_result.stdout.lower():
+                        print(f"✅ {name} 安装成功")
+                    else:
+                        print(f"⚠️  {name} 可能需要额外配置或依赖")
+            except subprocess.TimeoutExpired:
+                print(f"⚠️  {name} 验证超时,但可能正常工作")
+            except Exception as e:
+                print(f"⚠️  {name} 验证失败: {e}")
+        
         return str(exe)

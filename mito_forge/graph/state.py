@@ -178,7 +178,7 @@ def init_pipeline_state(
     import uuid
     
     # 初始化阶段信息
-    stage_names: List[StageName] = ["supervisor", "qc", "assembly", "annotation", "report"]
+    stage_names: List[StageName] = ["supervisor", "qc", "assembly", "polish", "annotation", "report"]
     stage_info = {}
     for stage in stage_names:
         stage_info[stage] = StageInfo(

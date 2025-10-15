@@ -1,0 +1,7 @@
+name: mito-forge-spades
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - python=3.8
+  - spades>=3.15.0
