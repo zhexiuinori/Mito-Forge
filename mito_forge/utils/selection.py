@@ -72,13 +72,13 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
 
     if st == "ont":
         plan = {
-            "qc": ["nanoqc"],
+            "qc": [],  # ONT数据直接组装,不需要QC
             "assembler": {"name": "flye", "params": {"mode": "ont"}},
             "polishers": ["racon", "medaka"],
         }
         plan["candidates"] = {
             "assembler": ["Flye", "Canu"],
-            "qc": ["NanoQC", "NanoPlot"],
+            "qc": [],  # ONT数据直接组装,不需要QC
             "polishers": ["Racon", "Medaka"],
         }
         plan["extras"] = {"mappers": ["minimap2"], "baiting_tools": []}
@@ -87,13 +87,13 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
 
     if st == "pacbio-hifi":
         plan = {
-            "qc": ["basic_stats"],
+            "qc": [],  # HiFi数据质量高,不需要QC
             "assembler": {"name": "hifiasm", "params": {}},
             "polishers": [],
         }
         plan["candidates"] = {
             "assembler": (["MitoHiFi", "hifiasm", "Flye"] if kg == "animal" else ["hifiasm", "Flye"]),
-            "qc": ["basic_stats"],
+            "qc": [],  # HiFi数据质量高,不需要QC
             "polishers": [],
         }
         plan["extras"] = {"mappers": ["minimap2"], "baiting_tools": []}
@@ -102,13 +102,13 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
 
     if st == "pacbio-clr":
         plan = {
-            "qc": ["basic_stats"],
+            "qc": [],  # 三代测序直接组装,不需要QC
             "assembler": {"name": "flye", "params": {"mode": "pacbio-raw"}},
             "polishers": ["racon", "racon"],
         }
         plan["candidates"] = {
             "assembler": ["Flye", "Canu"],
-            "qc": ["basic_stats"],
+            "qc": [],  # 三代测序直接组装,不需要QC
             "polishers": ["Racon", "Racon"],
         }
         plan["extras"] = {"mappers": ["minimap2"], "baiting_tools": []}
