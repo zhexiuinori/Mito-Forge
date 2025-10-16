@@ -503,14 +503,12 @@ class QCAgent(BaseAgent):
                                     result_r2 = parse_fastqc_output(zip_file_r2)
                                     # 合并 R1 和 R2 的指标
                                     from ...utils.paired_end_utils import merge_paired_qc_metrics
-                                    if result_r1.get('success') and result_r2.get('success'):
-                                        merged = merge_paired_qc_metrics(result_r1['metrics'], result_r2['metrics'])
-                                        merged["read_type"] = read_type
-                                        return merged
+                                    merged = merge_paired_qc_metrics(result_r1, result_r2)
+                                    merged["read_type"] = read_type
+                                    return merged
                             
                             # 单端或 R2 解析失败时返回 R1 结果
-                            result = result_r1
-                            return result
+                            return result_r1
                         else:
                             raise QCFailedError(
                                 f"FastQC output not found: {qc_dir}\n"
