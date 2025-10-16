@@ -477,17 +477,14 @@ class AnnotationAgent(BaseAgent):
         annotator = inputs.get("annotator", "mitos")
         interactive = inputs.get("interactive", False)
         
+        # Plant自动使用GeSeq (annotator可以显式指定也可以自动推断)
+        if kingdom == "plant" and annotator == "mitos":
+            # Plant默认使用GeSeq而非MITOS
+            annotator = "geseq"
+        
         # Plant + GeSeq路径
         if kingdom == "plant" and annotator == "geseq":
-            if not interactive:
-                raise AnnotationFailedError(
-                    "Plant annotation with GeSeq requires interactive mode.\n"
-                    "GeSeq is a web-based service that needs manual operation.\n\n"
-                    "Run with: mito-forge pipeline --kingdom plant --interactive\n\n"
-                    "Alternative: Install CPGAVAS2 for local annotation."
-                )
-            
-            # 触发GeSeq向导
+            # 触发GeSeq向导(不检查interactive,因为这本身就需要人工操作)
             from ...utils.geseq_guide import GeSeqGuide
             from .exceptions import PipelinePausedException
             
