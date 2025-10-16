@@ -439,7 +439,8 @@ def assembly_node(state: PipelineState) -> PipelineState:
                 # 提取Agent的真实组装结果
                 agent_outputs = _res.outputs or {}
                 assembly_results = agent_outputs.get("assembly_results", {})
-                mito_file = agent_outputs.get("assembly_file")
+                # 兼容两种key: assembly_file (新) 和 assembly (旧PMAT返回)
+                mito_file = agent_outputs.get("assembly_file") or assembly_results.get("assembly")
                 
                 # 如果Agent返回了线粒体文件,设置mito_candidates
                 if mito_file and Path(mito_file).exists():
@@ -448,6 +449,9 @@ def assembly_node(state: PipelineState) -> PipelineState:
                         "count": 1,  # TODO: 从assembly_results解析
                         "is_circular": assembly_results.get("is_circular", False)
                     }
+                    # 同时更新assembly_results以便后续metrics使用
+                    if not assembly_results.get("contigs"):
+                        assembly_results["contigs"] = str(mito_file)
                 
                 _ai = agent_outputs.get("ai_analysis", {}) or {}
                 merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
