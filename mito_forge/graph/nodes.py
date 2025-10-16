@@ -394,14 +394,9 @@ def assembly_node(state: PipelineState) -> PipelineState:
         tool_chain = config["tool_chain"]
         assembler = tool_chain["assembly"]
         
-        # 执行组装
-        assembly_results = _run_assembly(reads_file, assembly_dir, assembler, config)
-        
-        # 线粒体序列筛选
-        mito_candidates = _select_mitochondrial_contigs(
-            assembly_results["contigs"], 
-            config.get("kingdom", "animal")
-        )
+        # 初始化为None,后续从Agent获取真实结果
+        assembly_results = None
+        mito_candidates = None
         
         # 可选：调用真实 Assembly Agent 进行 LLM 评估（按分级 quick/detailed/expert 调整深度）
         asm_ai_metrics = {}
@@ -441,7 +436,20 @@ def assembly_node(state: PipelineState) -> PipelineState:
                     state["route"] = RouteDecision.TERMINATE
                     return state
                 
-                _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
+                # 提取Agent的真实组装结果
+                agent_outputs = _res.outputs or {}
+                assembly_results = agent_outputs.get("assembly_results", {})
+                mito_file = agent_outputs.get("assembly_file")
+                
+                # 如果Agent返回了线粒体文件,设置mito_candidates
+                if mito_file and Path(mito_file).exists():
+                    mito_candidates = {
+                        "fasta": str(mito_file),
+                        "count": 1,  # TODO: 从assembly_results解析
+                        "is_circular": assembly_results.get("is_circular", False)
+                    }
+                
+                _ai = agent_outputs.get("ai_analysis", {}) or {}
                 merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
                 # expert 追加一轮复核
                 if detail_level == "expert":
@@ -481,7 +489,18 @@ def assembly_node(state: PipelineState) -> PipelineState:
                     json.dump(merged_ai, f, ensure_ascii=False, indent=2)
                     
         except Exception as _e:
-            logger.warning(f"Assembly LLM评估失败，使用模拟结果: {_e}")
+            logger.warning(f"Assembly Agent执行失败，使用模拟结果: {_e}")
+        
+        # Fallback: 如果Agent没有返回结果,使用模拟数据
+        if assembly_results is None or mito_candidates is None:
+            logger.warning("Assembly Agent未返回结果,使用模拟数据")
+            # 执行组装(模拟)
+            assembly_results = _run_assembly(reads_file, assembly_dir, assembler, config)
+            # 线粒体序列筛选(模拟)
+            mito_candidates = _select_mitochondrial_contigs(
+                assembly_results["contigs"],
+                config.get("kingdom", "animal")
+            )
         
         # 准备输出
         files_dict = {
@@ -493,10 +512,10 @@ def assembly_node(state: PipelineState) -> PipelineState:
             files_dict["assembly_ai_analysis"] = asm_ai_file
         
         metrics_dict = {
-            "n50": assembly_results["n50"],
-            "total_contigs": assembly_results["num_contigs"],
-            "mito_candidates_count": mito_candidates["count"],
-            "largest_contig": assembly_results["largest_contig"],
+            "n50": assembly_results.get("n50", 0),
+            "total_contigs": assembly_results.get("num_contigs", assembly_results.get("total_contigs", 0)),
+            "mito_candidates_count": mito_candidates.get("count", 0),
+            "largest_contig": assembly_results.get("largest_contig", assembly_results.get("max_length", 0)),
             "is_circular": mito_candidates.get("is_circular", False)
         }
         metrics_dict.update({k: v for k, v in asm_ai_metrics.items() if v is not None})
